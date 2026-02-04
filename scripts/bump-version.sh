@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 <version|major|minor|patch> [--tag] [--push]"
+    echo "Usage: $0 <version|major|minor|patch> [--no-tag] [--no-push]"
     echo ""
     echo "Arguments:"
     echo "  <version>    Explicit version (e.g., 1.2.3)"
@@ -21,14 +21,16 @@ usage() {
     echo "  patch        Bump patch version (1.2.3 -> 1.2.4)"
     echo ""
     echo "Options:"
-    echo "  --tag        Create a git tag (v<version>)"
-    echo "  --push       Push commits and tags to origin"
+    echo "  --no-tag     Skip creating git tag"
+    echo "  --no-push    Skip pushing to origin"
+    echo ""
+    echo "By default, this script commits, tags, and pushes to origin."
     echo ""
     echo "Examples:"
-    echo "  $0 0.2.0              # Set version to 0.2.0"
-    echo "  $0 patch              # Bump patch version"
-    echo "  $0 minor --tag        # Bump minor and create tag"
-    echo "  $0 1.0.0 --tag --push # Release version 1.0.0"
+    echo "  $0 patch              # Bump patch, commit, tag, push"
+    echo "  $0 0.2.0              # Set to 0.2.0, commit, tag, push"
+    echo "  $0 minor --no-push    # Bump minor, commit, tag (no push)"
+    echo "  $0 1.0.0 --no-tag     # Set to 1.0.0, commit only"
     exit 1
 }
 
@@ -154,19 +156,19 @@ update_podspec() {
 
 # Main script
 main() {
-    local CREATE_TAG=false
-    local PUSH=false
+    local CREATE_TAG=true
+    local PUSH=true
     local VERSION_ARG=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --tag)
-                CREATE_TAG=true
+            --no-tag)
+                CREATE_TAG=false
                 shift
                 ;;
-            --push)
-                PUSH=true
+            --no-push)
+                PUSH=false
                 shift
                 ;;
             -h|--help)
@@ -257,8 +259,10 @@ main() {
         echo "  2. Commit: git add -A && git commit -m 'chore: bump version to $NEW_VERSION'"
         echo "  3. Tag: git tag -a v$NEW_VERSION -m 'Release v$NEW_VERSION'"
         echo "  4. Push: git push origin main && git push origin v$NEW_VERSION"
+    elif [[ "$PUSH" == false ]]; then
         echo ""
-        echo "Or run: $0 $NEW_VERSION --tag --push"
+        echo "Tag created locally. Push with:"
+        echo "  git push origin main && git push origin v$NEW_VERSION"
     fi
 }
 

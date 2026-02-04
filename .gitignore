@@ -1,0 +1,71 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.idea/
+.vscode/
+
+# Node / JS
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+coverage/
+**/coverage/
+*.log
+*.tsbuildinfo
+.test-dist/
+**/.test-dist/
+
+# pnpm
+.pnpm-store/
+
+# bun (this repo uses pnpm, but ignore bun lockfiles if present)
+bun.lockb
+bun.lock
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.swp
+Package.resolved
+Pods/
+Podfile.lock
+*.xcarchive
+
+# Android / Gradle
+.gradle/
+**/.gradle/
+local.properties
+*.iml
+*.keystore
+*.jks
+.cxx/
+**/.cxx/
+*.apk
+*.aab
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+pip-wheel-metadata/

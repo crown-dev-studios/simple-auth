@@ -1,0 +1,9 @@
+{
+  "name": "simple-auth",
+  "private": true,
+  "packageManager": "pnpm@10.28.1",
+  "scripts": {
+    "test:unit": "pnpm -C packages/shared-types build:test && pnpm -C packages/simple-auth-server-ts test:unit",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}

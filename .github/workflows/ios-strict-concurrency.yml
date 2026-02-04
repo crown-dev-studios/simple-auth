@@ -1,0 +1,29 @@
+name: iOS Swift Strict Concurrency
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install CocoaPods
+        run: sudo gem install cocoapods -N
+
+      - name: Build all iOS targets (Swift 6.2, strict concurrency)
+        run: scripts/ci/build-ios.sh
+

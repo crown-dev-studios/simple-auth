@@ -36,6 +36,7 @@ bun.lock
 # Swift / Xcode
 .build/
 .swiftpm/
+.ci/
 DerivedData/
 *.xcodeproj
 *.xcworkspace

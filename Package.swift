@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "simple-auth",
     platforms: [
-        .iOS(.v13),
+        .iOS(.v18),
         .macOS(.v10_15),
     ],
     products: [

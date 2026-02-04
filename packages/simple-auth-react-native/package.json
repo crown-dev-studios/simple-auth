@@ -1,34 +1,38 @@
 {
   "name": "@crown-dev-studios/simple-auth-react-native",
-  "version": "0.0.1",
-  "private": true,
-  "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "react-native": "src/index.ts",
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "react-native": "dist/index.js",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./google": {
-      "types": "./src/google/index.ts",
-      "default": "./src/google/index.ts"
+      "types": "./dist/google/index.d.ts",
+      "default": "./dist/google/index.js"
     },
     "./plugin": "./plugin/withSimpleAuth.cjs",
     "./app.plugin.js": "./app.plugin.js"
   },
   "app.plugin.js": "./app.plugin.js",
+  "files": ["dist", "plugin", "app.plugin.js"],
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "react-native": ">=0.71.0"
   },
   "dependencies": {
     "@expo/config-plugins": "^54.0.2",
-    "@crown-dev-studios/google-auth": "workspace:*",
-    "@crown-dev-studios/simple-auth-shared-types": "workspace:*",
+    "@crown-dev-studios/google-auth": "^0.1.0",
+    "@crown-dev-studios/simple-auth-shared-types": "^0.1.0",
     "expo-secure-store": "~15.0.8",
     "zod": "^4.1.12"
   },

@@ -17,6 +17,7 @@ coverage/
 **/coverage/
 *.log
 *.tsbuildinfo
+*.tgz
 .test-dist/
 **/.test-dist/
 

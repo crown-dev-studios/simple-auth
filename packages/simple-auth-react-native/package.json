@@ -1,6 +1,6 @@
 {
   "name": "@crown-dev-studios/simple-auth-react-native",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,8 +31,8 @@
   },
   "dependencies": {
     "@expo/config-plugins": "^54.0.2",
-    "@crown-dev-studios/google-auth": "^0.1.0",
-    "@crown-dev-studios/simple-auth-shared-types": "^0.1.1",
+    "@crown-dev-studios/google-auth": "^0.1.2",
+    "@crown-dev-studios/simple-auth-shared-types": "^0.1.2",
     "expo-secure-store": "~15.0.8",
     "zod": "^4.1.12"
   },

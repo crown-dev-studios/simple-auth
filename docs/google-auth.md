@@ -2,6 +2,20 @@
 
 This repo contains an extracted Google auth-code flow that returns a one-time `serverAuthCode` (aka `authCode`) for your application server to exchange.
 
+## Integration checklist (must match on both sides)
+
+1) **iOS client uses two IDs**
+- `iosClientId` = your **iOS** OAuth client ID
+- `webClientId` = your **Web** OAuth client ID (used as `serverClientID` to obtain `serverAuthCode`)
+
+2) **Server exchanges using the same Web client**
+- `clientId` = the same **Web** client ID used above
+- `clientSecret` = the secret for that Web client
+
+3) **Redirect URI**
+- Default: **omit** `redirectUri`
+- Only set `redirectUri` when your OAuth client/config requires it
+
 ## React Native (Expo / Bare)
 
 ### JS API
@@ -23,6 +37,14 @@ It sets:
 - `GIDClientID`
 - `GIDServerClientID`
 - iOS URL scheme (`CFBundleURLTypes`) for the reversed client ID.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `invalid_grant` on server exchange | wrong client secret, wrong client-id pairing, reused/expired code, redirect mismatch | verify Web client id/secret pairing and whether redirectUri must be set |
+| `redirect_uri_mismatch` | redirect URI configured incorrectly | set `redirectUri` to the exact value required by the OAuth client, or omit it if not required |
+| iOS returns `auth_code_failed` / missing auth code | GoogleSignIn config issue | verify `webClientId` is a **Web** client id and `GIDServerClientID` is set |
 
 ## Native iOS (SwiftPM)
 

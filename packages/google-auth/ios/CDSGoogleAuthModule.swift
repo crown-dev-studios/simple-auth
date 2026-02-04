@@ -1,15 +1,27 @@
 import Foundation
-import React
+import GoogleSignIn
+@preconcurrency import React
 import UIKit
 
+private struct GoogleAuthConfig {
+    let iosClientId: String
+    let webClientId: String
+    let scopes: [String]
+}
+
 @objc(CDSGoogleAuth)
-class CDSGoogleAuth: NSObject {
-    private let client = GoogleAuthClient()
+final class CDSGoogleAuth: NSObject {
+    private var config: GoogleAuthConfig?
     private var pendingPromise: (resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock)?
+    private var pendingTimeoutTask: Task<Void, Never>?
+
+    private let signInTimeoutSeconds: TimeInterval = 60
+    private let googleSignInErrorDomain = "com.google.GIDSignIn"
+    private let googleSignInCanceledErrorCode = -5
 
     @objc
     static func requiresMainQueueSetup() -> Bool {
-        return true
+        true
     }
 
     @objc(configure:resolver:rejecter:)
@@ -29,13 +41,7 @@ class CDSGoogleAuth: NSObject {
         }
 
         let scopes = options["scopes"] as? [String] ?? ["openid", "email", "profile"]
-        client.configure(
-            GoogleAuthConfiguration(
-                iosClientId: iosClientId,
-                webClientId: webClientId,
-                scopes: scopes
-            )
-        )
+        config = GoogleAuthConfig(iosClientId: iosClientId, webClientId: webClientId, scopes: scopes)
         resolve(nil)
     }
 
@@ -49,88 +55,127 @@ class CDSGoogleAuth: NSObject {
             return
         }
 
-        guard let presenter = topViewController() else {
-            reject("presentation_error", "Unable to find a presenting view controller", nil)
-            return
-        }
-
         pendingPromise = (resolve: resolve, reject: reject)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
 
-            do {
-                let authCode = try await self.client.signIn(presentingViewController: presenter)
-                self.resolvePending(["authCode": authCode])
-            } catch let error as GoogleAuthError {
-                switch error {
-                    case .configMissing:
-                        self.rejectPending("config_error", "Google auth not configured", nil)
-                    case .signInInProgress:
-                        self.rejectPending("sign_in_in_progress", "Google sign-in already in progress", nil)
-                    case .canceled:
-                        self.rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
-                    case .timeout:
-                        self.rejectPending("sign_in_timeout", "Google sign-in timed out", nil)
-                    case .missingAuthCode:
-                        self.rejectPending("auth_code_failed", "Missing server auth code", nil)
-                    case .presentationError:
-                        self.rejectPending("presentation_error", "Unable to present Google sign-in UI", nil)
-                    case .underlying(let underlyingError):
-                        self.rejectPending("sign_in_failed", underlyingError.localizedDescription, underlyingError)
-                }
-            } catch {
-                self.rejectPending("sign_in_failed", error.localizedDescription, error)
-            }
+        Task { @MainActor [weak self] in
+            self?.startSignInOnMain()
         }
     }
 
     @objc(signOut:rejecter:)
     func signOut(
         resolver resolve: RCTPromiseResolveBlock,
-        rejecter reject: RCTPromiseRejectBlock
+        rejecter _: RCTPromiseRejectBlock
     ) {
-        if pendingPromise != nil {
-            rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
-        }
-        client.signOut()
         resolve(nil)
+
+        Task { @MainActor [weak self] in
+            self?.signOutOnMain()
+        }
     }
 
+    @MainActor
+    private func startSignInOnMain() {
+        guard pendingPromise != nil else {
+            return
+        }
+
+        guard let config else {
+            rejectPending("config_error", "Google auth not configured", nil)
+            return
+        }
+
+        guard let presenter = RCTPresentedViewController() else {
+            rejectPending("presentation_error", "Unable to find a presenting view controller", nil)
+            return
+        }
+
+        pendingTimeoutTask?.cancel()
+        pendingTimeoutTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let nanoseconds = UInt64((self.signInTimeoutSeconds * 1_000_000_000).rounded())
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self.rejectPending("sign_in_timeout", "Google sign-in timed out", nil)
+        }
+
+        let configuration = GIDConfiguration(clientID: config.iosClientId, serverClientID: config.webClientId)
+        GIDSignIn.sharedInstance.configuration = configuration
+
+        GIDSignIn.sharedInstance.signIn(
+            withPresenting: presenter,
+            hint: nil,
+            additionalScopes: config.scopes
+        ) { [weak self] result, error in
+            let authCode = result?.serverAuthCode
+
+            let errorInfo: (domain: String, code: Int, description: String)?
+            if let error {
+                let nsError = error as NSError
+                errorInfo = (domain: nsError.domain, code: nsError.code, description: nsError.localizedDescription)
+            } else {
+                errorInfo = nil
+            }
+
+            Task { @MainActor in
+                guard let self else { return }
+
+                if let errorInfo {
+                    if errorInfo.domain == self.googleSignInErrorDomain
+                        && errorInfo.code == self.googleSignInCanceledErrorCode
+                    {
+                        self.rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
+                        return
+                    }
+
+                    let wrapped = NSError(
+                        domain: errorInfo.domain,
+                        code: errorInfo.code,
+                        userInfo: [NSLocalizedDescriptionKey: errorInfo.description]
+                    )
+                    self.rejectPending("sign_in_failed", errorInfo.description, wrapped)
+                    return
+                }
+
+                guard let authCode, !authCode.isEmpty else {
+                    self.rejectPending("auth_code_failed", "Missing server auth code", nil)
+                    return
+                }
+
+                self.resolvePending(["authCode": authCode])
+            }
+        }
+    }
+
+    @MainActor
+    private func signOutOnMain() {
+        if pendingPromise != nil {
+            rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
+        } else {
+            pendingTimeoutTask?.cancel()
+            pendingTimeoutTask = nil
+        }
+
+        GIDSignIn.sharedInstance.signOut()
+    }
+
+    @MainActor
     private func resolvePending(_ value: Any?) {
         pendingPromise?.resolve(value)
         clearPending()
     }
 
+    @MainActor
     private func rejectPending(_ code: String, _ message: String, _ error: Error?) {
         pendingPromise?.reject(code, message, error)
         clearPending()
     }
 
+    @MainActor
     private func clearPending() {
         pendingPromise = nil
-    }
-
-    private func topViewController() -> UIViewController? {
-        let scenes = UIApplication.shared.connectedScenes
-        let windowScene = scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
-        let keyWindow = windowScene?.windows.first { $0.isKeyWindow }
-        guard let rootViewController = keyWindow?.rootViewController else { return nil }
-        return findTopViewController(rootViewController)
-    }
-
-    private func findTopViewController(_ root: UIViewController) -> UIViewController {
-        if let presented = root.presentedViewController {
-            return findTopViewController(presented)
-        }
-
-        if let nav = root as? UINavigationController, let visible = nav.visibleViewController {
-            return findTopViewController(visible)
-        }
-
-        if let tab = root as? UITabBarController, let selected = tab.selectedViewController {
-            return findTopViewController(selected)
-        }
-
-        return root
+        pendingTimeoutTask?.cancel()
+        pendingTimeoutTask = nil
     }
 }
+

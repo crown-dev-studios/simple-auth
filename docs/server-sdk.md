@@ -16,6 +16,10 @@ Modules:
 - `session/` — `AuthSessionService`
 - `oauth/google/` — `GoogleOAuthService`
 
+Google exchange notes:
+- `redirectUri` is optional; default is to omit it
+- only set `redirectUri` if your OAuth client/config requires it (must match exactly)
+
 Example:
 - `examples/server-ts/index.ts`
 
@@ -32,4 +36,3 @@ Modules:
 
 Example:
 - `examples/server-python/app.py`
-

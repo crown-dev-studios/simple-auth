@@ -1,4 +1,5 @@
-import { OAuth2Client } from 'google-auth-library'
+import { OAuth2Client, gaxios } from 'google-auth-library'
+import { z } from 'zod'
 
 export interface GoogleOAuthConfig {
   clientId: string
@@ -18,6 +19,35 @@ export type GoogleOAuthUserInfo = {
 export type GoogleOAuthExchangeResult =
   | { success: true; data: { user: GoogleOAuthUserInfo; refreshToken?: string; accessToken?: string; idToken: string } }
   | { success: false; error: Error }
+
+const GoogleOAuthErrorResponseSchema = z
+  .object({
+    error: z.string(),
+    error_description: z.string().optional(),
+  })
+  .passthrough()
+
+class GoogleOAuthTokenExchangeError extends Error {
+  readonly httpStatus?: number
+  readonly oauthError?: string
+  readonly oauthErrorDescription?: string
+
+  constructor(
+    message: string,
+    options: {
+      cause?: unknown
+      httpStatus?: number
+      oauthError?: string
+      oauthErrorDescription?: string
+    } = {}
+  ) {
+    super(message, { cause: options.cause })
+    this.name = 'GoogleOAuthTokenExchangeError'
+    this.httpStatus = options.httpStatus
+    this.oauthError = options.oauthError
+    this.oauthErrorDescription = options.oauthErrorDescription
+  }
+}
 
 export class GoogleOAuthService {
   private readonly client: OAuth2Client
@@ -66,8 +96,61 @@ export class GoogleOAuthService {
         },
       }
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error : new Error('Auth code exchange failed') }
+      return { success: false, error: this.normalizeExchangeError(error) }
+    }
+  }
+
+  private normalizeExchangeError(error: unknown): Error {
+    if (error instanceof gaxios.GaxiosError) {
+      const status = error.response?.status
+      const statusText = error.response?.statusText
+      const httpLabel =
+        statusText && statusText.length > 0 && typeof status === 'number' ? `HTTP ${status} ${statusText}` : `HTTP ${status ?? 'unknown'}`
+
+      const responseData = this.parseResponseData(error.response?.data)
+      const parsed = GoogleOAuthErrorResponseSchema.safeParse(responseData)
+      if (parsed.success) {
+        const suffix = parsed.data.error_description ? `: ${parsed.data.error_description}` : ''
+        return new GoogleOAuthTokenExchangeError(
+          `Google OAuth token exchange failed (${httpLabel}): ${parsed.data.error}${suffix}`,
+          {
+            cause: error,
+            httpStatus: typeof status === 'number' ? status : undefined,
+            oauthError: parsed.data.error,
+            oauthErrorDescription: parsed.data.error_description,
+          }
+        )
+      }
+
+      return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed (${httpLabel}): ${error.message}`, {
+        cause: error,
+        httpStatus: typeof status === 'number' ? status : undefined,
+      })
+    }
+
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (typeof code === 'string' && code.length > 0) {
+        return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed (${code}): ${error.message}`, {
+          cause: error,
+        })
+      }
+
+      return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed: ${error.message}`, { cause: error })
+    }
+
+    return new Error('Auth code exchange failed')
+  }
+
+  private parseResponseData(data: unknown): unknown {
+    if (typeof data !== 'string') {
+      return data
+    }
+
+    try {
+      return JSON.parse(data)
+    } catch {
+      return data
     }
   }
 }
-

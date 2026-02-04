@@ -35,6 +35,16 @@ public enum GoogleAuthError: Error {
     case underlying(Error)
 }
 
+private actor CompletionGate {
+    private var finished = false
+
+    func tryFinish() -> Bool {
+        guard !finished else { return false }
+        finished = true
+        return true
+    }
+}
+
 @MainActor
 public final class GoogleAuthClient {
     private var config: GoogleAuthConfiguration?
@@ -55,46 +65,60 @@ public final class GoogleAuthClient {
 
     private func signInInternal(
         timeoutSeconds: TimeInterval,
-        start: (@escaping (GIDSignInResult?, Error?) -> Void) -> Void
+        start: (@escaping @Sendable (GIDSignInResult?, Error?) -> Void) -> Void
     ) async throws -> String {
         let clampedTimeout = max(1, timeoutSeconds)
-        return try await withCheckedThrowingContinuation { continuation in
-            var didFinish = false
+        let signInErrorDomain = googleSignInErrorDomain
+        let signInCanceledErrorCode = googleSignInCanceledErrorCode
 
-            let timeoutWorkItem = DispatchWorkItem {
-                guard !didFinish else { return }
-                didFinish = true
+        return try await withCheckedThrowingContinuation { continuation in
+            let gate = CompletionGate()
+
+            let timeoutTask = Task {
+                let nanoseconds = UInt64((clampedTimeout * 1_000_000_000).rounded())
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard !Task.isCancelled else { return }
+                guard await gate.tryFinish() else { return }
                 continuation.resume(throwing: GoogleAuthError.timeout)
             }
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + clampedTimeout,
-                execute: timeoutWorkItem
-            )
 
-            start { result, error in
-                guard !didFinish else { return }
-                didFinish = true
-                timeoutWorkItem.cancel()
+            start { @Sendable result, error in
+                let authCode = result?.serverAuthCode
 
+                let errorInfo: (domain: String, code: Int, description: String)?
                 if let error {
                     let nsError = error as NSError
-                    if nsError.domain == self.googleSignInErrorDomain
-                        && nsError.code == self.googleSignInCanceledErrorCode
-                    {
-                        continuation.resume(throwing: GoogleAuthError.canceled)
+                    errorInfo = (domain: nsError.domain, code: nsError.code, description: nsError.localizedDescription)
+                } else {
+                    errorInfo = nil
+                }
+
+                Task {
+                    guard await gate.tryFinish() else { return }
+                    timeoutTask.cancel()
+
+                    if let errorInfo {
+                        if errorInfo.domain == signInErrorDomain && errorInfo.code == signInCanceledErrorCode {
+                            continuation.resume(throwing: GoogleAuthError.canceled)
+                            return
+                        }
+
+                        let wrapped = NSError(
+                            domain: errorInfo.domain,
+                            code: errorInfo.code,
+                            userInfo: [NSLocalizedDescriptionKey: errorInfo.description]
+                        )
+                        continuation.resume(throwing: GoogleAuthError.underlying(wrapped))
                         return
                     }
 
-                    continuation.resume(throwing: GoogleAuthError.underlying(error))
-                    return
-                }
+                    guard let authCode, !authCode.isEmpty else {
+                        continuation.resume(throwing: GoogleAuthError.missingAuthCode)
+                        return
+                    }
 
-                guard let authCode = result?.serverAuthCode, !authCode.isEmpty else {
-                    continuation.resume(throwing: GoogleAuthError.missingAuthCode)
-                    return
+                    continuation.resume(returning: authCode)
                 }
-
-                continuation.resume(returning: authCode)
             }
         }
     }

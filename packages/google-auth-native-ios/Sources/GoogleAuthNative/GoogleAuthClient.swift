@@ -75,8 +75,7 @@ public final class GoogleAuthClient {
             let gate = CompletionGate()
 
             let timeoutTask = Task {
-                let nanoseconds = UInt64((clampedTimeout * 1_000_000_000).rounded())
-                try? await Task.sleep(nanoseconds: nanoseconds)
+                try? await Task.sleep(for: .seconds(clampedTimeout))
                 guard !Task.isCancelled else { return }
                 guard await gate.tryFinish() else { return }
                 continuation.resume(throwing: GoogleAuthError.timeout)

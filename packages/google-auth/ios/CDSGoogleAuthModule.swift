@@ -10,6 +10,7 @@ private struct GoogleAuthConfig {
 }
 
 @objc(CDSGoogleAuth)
+@MainActor
 final class CDSGoogleAuth: NSObject {
     private var config: GoogleAuthConfig?
     private var pendingPromise: (resolve: RCTPromiseResolveBlock, reject: RCTPromiseRejectBlock)?
@@ -56,10 +57,7 @@ final class CDSGoogleAuth: NSObject {
         }
 
         pendingPromise = (resolve: resolve, reject: reject)
-
-        Task { @MainActor [weak self] in
-            self?.startSignInOnMain()
-        }
+        startSignInOnMain()
     }
 
     @objc(signOut:rejecter:)
@@ -68,13 +66,9 @@ final class CDSGoogleAuth: NSObject {
         rejecter _: RCTPromiseRejectBlock
     ) {
         resolve(nil)
-
-        Task { @MainActor [weak self] in
-            self?.signOutOnMain()
-        }
+        signOutOnMain()
     }
 
-    @MainActor
     private func startSignInOnMain() {
         guard pendingPromise != nil else {
             return
@@ -93,8 +87,7 @@ final class CDSGoogleAuth: NSObject {
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let nanoseconds = UInt64((self.signInTimeoutSeconds * 1_000_000_000).rounded())
-            try? await Task.sleep(nanoseconds: nanoseconds)
+            try? await Task.sleep(for: .seconds(self.signInTimeoutSeconds))
             guard !Task.isCancelled else { return }
             self.rejectPending("sign_in_timeout", "Google sign-in timed out", nil)
         }
@@ -147,7 +140,6 @@ final class CDSGoogleAuth: NSObject {
         }
     }
 
-    @MainActor
     private func signOutOnMain() {
         if pendingPromise != nil {
             rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
@@ -159,23 +151,19 @@ final class CDSGoogleAuth: NSObject {
         GIDSignIn.sharedInstance.signOut()
     }
 
-    @MainActor
     private func resolvePending(_ value: Any?) {
         pendingPromise?.resolve(value)
         clearPending()
     }
 
-    @MainActor
     private func rejectPending(_ code: String, _ message: String, _ error: Error?) {
         pendingPromise?.reject(code, message, error)
         clearPending()
     }
 
-    @MainActor
     private func clearPending() {
         pendingPromise = nil
         pendingTimeoutTask?.cancel()
         pendingTimeoutTask = nil
     }
 }
-

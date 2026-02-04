@@ -12,6 +12,12 @@ Pod::Spec.new do |s|
   ]
   s.requires_arc = true
   s.swift_version = '6.2'
+  s.pod_target_xcconfig = {
+    'SWIFT_STRICT_CONCURRENCY' => 'complete',
+  }
+  s.user_target_xcconfig = {
+    'SWIFT_STRICT_CONCURRENCY' => 'complete',
+  }
   s.dependency 'React-Core'
   s.dependency 'GoogleSignIn'
 end

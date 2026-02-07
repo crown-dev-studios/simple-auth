@@ -9,24 +9,11 @@ private struct GoogleAuthConfig: Sendable {
     let scopes: [String]
 }
 
-/// React Native bridge module for Google Sign-In.
-///
-/// ## Thread Safety Invariant
-///
-/// This class is marked `@unchecked Sendable` because React Native's bridge
-/// provides external thread safety guarantees:
-///
-/// 1. `requiresMainQueueSetup() -> true` ensures all ObjC bridge method calls
-///    (configure, signIn, signOut) are dispatched to the main queue.
-/// 2. GoogleSignIn SDK callbacks are delivered on the main queue.
-/// 3. All property access is therefore serialized on main queue.
-///
-/// This is a legitimate use of `@unchecked Sendable` per Swift concurrency
-/// guidelines - the safety is provided by the framework (React Native), not
-/// by Swift's type system.
-///
-/// TODO: If React Native adopts Swift-native modules with proper actor isolation,
-/// migrate this to use `@MainActor` class isolation instead.
+private enum GoogleAuthScopeMode: String {
+    case add
+    case replace
+}
+
 @objc(CDSGoogleAuth)
 final class CDSGoogleAuth: NSObject, @unchecked Sendable {
     private var config: GoogleAuthConfig?
@@ -41,8 +28,6 @@ final class CDSGoogleAuth: NSObject, @unchecked Sendable {
     static func requiresMainQueueSetup() -> Bool {
         true
     }
-
-    // MARK: - Configure
 
     @objc(configure:resolver:rejecter:)
     func configure(
@@ -60,23 +45,16 @@ final class CDSGoogleAuth: NSObject, @unchecked Sendable {
             return
         }
 
-        let scopes = options["scopes"] as? [String] ?? ["openid", "email", "profile"]
+        let scopes = normalizeScopes(options["scopes"] as? [String] ?? ["openid", "email", "profile"])
         config = GoogleAuthConfig(iosClientId: iosClientId, webClientId: webClientId, scopes: scopes)
         resolve(nil)
     }
-
-    // MARK: - Sign In
 
     @objc(signIn:rejecter:)
     func signIn(
         resolver resolve: @escaping RCTPromiseResolveBlock,
         rejecter reject: @escaping RCTPromiseRejectBlock
     ) {
-        if pendingPromise != nil {
-            reject("sign_in_in_progress", "Google sign-in already in progress", nil)
-            return
-        }
-
         guard let config else {
             reject("config_error", "Google auth not configured", nil)
             return
@@ -87,26 +65,194 @@ final class CDSGoogleAuth: NSObject, @unchecked Sendable {
             return
         }
 
-        pendingPromise = (resolve: resolve, reject: reject)
+        startSignIn(
+            fallbackScopes: config.scopes,
+            resolve: resolve,
+            reject: reject
+        ) { callback in
+            GIDSignIn.sharedInstance.signIn(
+                withPresenting: presenter,
+                hint: nil,
+                additionalScopes: config.scopes,
+                completion: callback
+            )
+        }
+    }
 
-        pendingTimeoutTask?.cancel()
-        let timeoutSeconds = signInTimeoutSeconds
-        pendingTimeoutTask = Task.detached { [weak self] in
-            try? await Task.sleep(for: .seconds(timeoutSeconds))
-            guard !Task.isCancelled else { return }
-            await MainActor.run { [weak self] in
-                self?.rejectPending("sign_in_timeout", "Google sign-in timed out", nil)
+    @objc(updateScopes:mode:resolver:rejecter:)
+    func updateScopes(
+        _ scopes: [String],
+        mode: String,
+        resolver resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+        guard let config else {
+            reject("config_error", "Google auth not configured", nil)
+            return
+        }
+
+        guard let presenter = RCTPresentedViewController() else {
+            reject("presentation_error", "Unable to find a presenting view controller", nil)
+            return
+        }
+
+        guard let parsedMode = GoogleAuthScopeMode(rawValue: mode.lowercased()) else {
+            reject("validation_error", "mode must be 'add' or 'replace'", nil)
+            return
+        }
+
+        guard let currentUser = GIDSignIn.sharedInstance.currentUser else {
+            reject("not_signed_in", "No Google session available", nil)
+            return
+        }
+
+        let targetScopes = normalizeScopes(scopes)
+        let currentScopes = getGrantedScopesInternal()
+        let currentSet = Set(currentScopes)
+        let targetSet = Set(targetScopes)
+
+        switch parsedMode {
+        case .add:
+            let scopesToAdd = targetScopes.filter { !currentSet.contains($0) }
+            if scopesToAdd.isEmpty {
+                reject("no_scope_change_required", "Requested scopes are already granted", nil)
+                return
+            }
+
+            startSignIn(
+                fallbackScopes: mergeScopes(currentScopes, scopesToAdd),
+                resolve: resolve,
+                reject: reject
+            ) { callback in
+                currentUser.addScopes(scopesToAdd, presenting: presenter, completion: callback)
+            }
+
+        case .replace:
+            if targetSet == currentSet {
+                reject("no_scope_change_required", "Requested scopes match current granted scopes", nil)
+                return
+            }
+
+            let hasRemovals = !currentSet.isSubset(of: targetSet)
+            let desiredScopes = targetScopes.isEmpty ? config.scopes : targetScopes
+
+            if hasRemovals {
+                if !beginPending(resolve: resolve, reject: reject) {
+                    return
+                }
+                GIDSignIn.sharedInstance.disconnect { [weak self] error in
+                    guard let self else { return }
+                    if let error {
+                        self.rejectPending("revoke_failed", (error as NSError).localizedDescription, error)
+                        return
+                    }
+
+                    self.continueSignIn(
+                        fallbackScopes: desiredScopes,
+                        start: { callback in
+                            GIDSignIn.sharedInstance.signIn(
+                                withPresenting: presenter,
+                                hint: nil,
+                                additionalScopes: desiredScopes,
+                                completion: callback
+                            )
+                        }
+                    )
+                }
+                return
+            }
+
+            startSignIn(
+                fallbackScopes: desiredScopes,
+                resolve: resolve,
+                reject: reject
+            ) { callback in
+                GIDSignIn.sharedInstance.signIn(
+                    withPresenting: presenter,
+                    hint: nil,
+                    additionalScopes: desiredScopes,
+                    completion: callback
+                )
             }
         }
+    }
+
+    @objc(getGrantedScopes:rejecter:)
+    func getGrantedScopes(
+        resolver resolve: RCTPromiseResolveBlock,
+        rejecter _: RCTPromiseRejectBlock
+    ) {
+        resolve(getGrantedScopesInternal())
+    }
+
+    @objc(revokeAccess:rejecter:)
+    func revokeAccess(
+        resolver resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+        if pendingPromise != nil {
+            rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
+        } else {
+            pendingTimeoutTask?.cancel()
+            pendingTimeoutTask = nil
+        }
+
+        GIDSignIn.sharedInstance.disconnect { error in
+            if let error {
+                reject("revoke_failed", (error as NSError).localizedDescription, error)
+                return
+            }
+            resolve(nil)
+        }
+    }
+
+    @objc(signOut:rejecter:)
+    func signOut(
+        resolver resolve: RCTPromiseResolveBlock,
+        rejecter _: RCTPromiseRejectBlock
+    ) {
+        if pendingPromise != nil {
+            rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
+        } else {
+            pendingTimeoutTask?.cancel()
+            pendingTimeoutTask = nil
+        }
+
+        GIDSignIn.sharedInstance.signOut()
+        resolve(nil)
+    }
+
+    private func startSignIn(
+        fallbackScopes: [String],
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock,
+        start: (@escaping (GIDSignInResult?, Error?) -> Void) -> Void
+    ) {
+        if !beginPending(resolve: resolve, reject: reject) {
+            return
+        }
+
+        continueSignIn(
+            fallbackScopes: fallbackScopes,
+            start: start
+        )
+    }
+
+    private func continueSignIn(
+        fallbackScopes: [String],
+        start: (@escaping (GIDSignInResult?, Error?) -> Void) -> Void
+    ) {
+        guard let config else {
+            rejectPending("config_error", "Google auth not configured", nil)
+            return
+        }
+
+        let normalizedFallbackScopes = normalizeScopes(fallbackScopes)
 
         let configuration = GIDConfiguration(clientID: config.iosClientId, serverClientID: config.webClientId)
         GIDSignIn.sharedInstance.configuration = configuration
 
-        GIDSignIn.sharedInstance.signIn(
-            withPresenting: presenter,
-            hint: nil,
-            additionalScopes: config.scopes
-        ) { [weak self] result, error in
+        start { [weak self] result, error in
             guard let self else { return }
 
             if let error {
@@ -126,29 +272,56 @@ final class CDSGoogleAuth: NSObject, @unchecked Sendable {
                 return
             }
 
-            self.resolvePending(["authCode": authCode])
+            let grantedScopes = self.normalizeScopes(result?.user.grantedScopes ?? normalizedFallbackScopes)
+            self.resolvePending(["authCode": authCode, "grantedScopes": grantedScopes])
         }
     }
 
-    // MARK: - Sign Out
-
-    @objc(signOut:rejecter:)
-    func signOut(
-        resolver resolve: RCTPromiseResolveBlock,
-        rejecter _: RCTPromiseRejectBlock
-    ) {
+    private func beginPending(
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) -> Bool {
         if pendingPromise != nil {
-            rejectPending("sign_in_canceled", "Google sign-in canceled", nil)
-        } else {
-            pendingTimeoutTask?.cancel()
-            pendingTimeoutTask = nil
+            reject("sign_in_in_progress", "Google sign-in already in progress", nil)
+            return false
         }
 
-        GIDSignIn.sharedInstance.signOut()
-        resolve(nil)
+        pendingPromise = (resolve: resolve, reject: reject)
+        pendingTimeoutTask?.cancel()
+        let timeoutSeconds = signInTimeoutSeconds
+        pendingTimeoutTask = Task.detached { [weak self] in
+            try? await Task.sleep(for: .seconds(timeoutSeconds))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                self?.rejectPending("sign_in_timeout", "Google sign-in timed out", nil)
+            }
+        }
+
+        return true
     }
 
-    // MARK: - Private helpers
+    private func getGrantedScopesInternal() -> [String] {
+        normalizeScopes(GIDSignIn.sharedInstance.currentUser?.grantedScopes ?? [])
+    }
+
+    private func normalizeScopes(_ scopes: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalized: [String] = []
+
+        for scope in scopes {
+            let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                normalized.append(trimmed)
+            }
+        }
+
+        return normalized
+    }
+
+    private func mergeScopes(_ lhs: [String], _ rhs: [String]) -> [String] {
+        normalizeScopes(lhs + rhs)
+    }
 
     private func resolvePending(_ value: Any?) {
         pendingPromise?.resolve(value)

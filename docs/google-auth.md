@@ -24,7 +24,12 @@ React Native bridge package:
 - `@crown-dev-studios/google-auth`
 
 - `configureGoogleAuth({ iosClientId, webClientId, scopes? })`
-- `signInWithGoogle() -> { authCode }`
+- `signInWithGoogle() -> { authCode, grantedScopes }`
+- `updateGoogleScopes({ scopes, mode }) -> { authCode, grantedScopes }`
+  - `mode: 'add'` requests only missing scopes.
+  - `mode: 'replace'` makes the provided scope set authoritative.
+- `getGoogleGrantedScopes() -> string[]`
+- `revokeGoogleAccess()`
 - `signOutGoogle()`
 
 ### Expo config plugin (iOS)
@@ -45,6 +50,7 @@ It sets:
 | `invalid_grant` on server exchange | wrong client secret, wrong client-id pairing, reused/expired code, redirect mismatch | verify Web client id/secret pairing and whether redirectUri must be set |
 | `redirect_uri_mismatch` | redirect URI configured incorrectly | set `redirectUri` to the exact value required by the OAuth client, or omit it if not required |
 | iOS returns `auth_code_failed` / missing auth code | GoogleSignIn config issue | verify `webClientId` is a **Web** client id and `GIDServerClientID` is set |
+| `no_scope_change_required` | `updateGoogleScopes` request is a no-op | only call `updateGoogleScopes` when scope set actually changes |
 
 ## Native iOS (SwiftPM)
 
@@ -55,8 +61,15 @@ Library:
 
 API:
 - `GoogleAuthClient.configure(GoogleAuthConfiguration(...))`
-- `GoogleAuthClient.signIn(presentingViewController:) -> String` (returns auth code)
+- `GoogleAuthClient.signIn(presentingViewController:) -> GoogleAuthResult`
+- `GoogleAuthClient.updateScopes(scopes:mode:presentingViewController:) -> GoogleAuthResult`
+- `GoogleAuthClient.getGrantedScopes() -> [String]`
+- `GoogleAuthClient.revokeAccess()`
 - `GoogleAuthClient.signOut()`
+
+Where:
+- `GoogleAuthResult = { authCode: String, grantedScopes: [String] }`
+- `GoogleAuthScopeMode = .add | .replace`
 
 Sources:
 - `packages/google-auth-native-ios/Sources/GoogleAuthNative`
@@ -68,9 +81,16 @@ Pure native SDK module:
 
 API:
 - `GoogleAuthClient.configure(GoogleAuthConfig(...))`
-- `beginSignIn(activity)` → `Completed(authCode)` or `RequiresResolution(intentSenderRequest)`
-- `completeSignIn(resultCode, data)` → `authCode`
+- `beginSignIn(activity)` → `Completed(result)` or `RequiresResolution(intentSenderRequest)`
+- `completeSignIn(resultCode, data)` → `GoogleAuthResult`
+- `updateScopes(activity, scopes, mode)`
+- `getGrantedScopes()`
+- `revokeAccess()`
 - `signOut()`
+
+Where:
+- `GoogleAuthResult = { authCode: String, grantedScopes: List<String> }`
+- `GoogleAuthScopeMode = ADD | REPLACE`
 
 Repo-local build integration:
 - Add `packages/google-auth-native-android` as a Gradle module in your app (via `settings.gradle`) and depend on it.

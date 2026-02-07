@@ -6,6 +6,7 @@
     "rootDir": ".",
     "module": "CommonJS",
     "moduleResolution": "Node",
+    "paths": {},
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]

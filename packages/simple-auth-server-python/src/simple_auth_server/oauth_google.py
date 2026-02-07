@@ -28,7 +28,7 @@ class GoogleOAuthService:
         self._config = config
         self._http = http_client or httpx.AsyncClient(timeout=10.0)
 
-    async def exchange_auth_code(self, auth_code: str) -> dict[str, Any]:
+    async def exchange_auth_code(self, auth_code: str, required_scopes: Optional[list[str]] = None) -> dict[str, Any]:
         token_payload = {
             "code": auth_code,
             "client_id": self._config.client_id,
@@ -45,6 +45,16 @@ class GoogleOAuthService:
         access_token = tokens.get("access_token")
         if not access_token:
             raise ValueError("Missing access_token")
+
+        scope = tokens.get("scope") if isinstance(tokens.get("scope"), str) else None
+        granted_scopes = self._parse_scope_string(scope)
+
+        normalized_required = self._normalize_scopes(required_scopes or [])
+        if normalized_required:
+            granted_scope_set = set(granted_scopes)
+            missing = [entry for entry in normalized_required if entry not in granted_scope_set]
+            if missing:
+                raise ValueError(f"Missing required Google scopes: {', '.join(missing)}")
 
         userinfo_resp = await self._http.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -67,6 +77,36 @@ class GoogleOAuthService:
             "idToken": tokens.get("id_token"),
             "expiresIn": tokens.get("expires_in"),
             "tokenType": tokens.get("token_type"),
-            "scope": tokens.get("scope"),
+            "scope": scope,
+            "grantedScopes": granted_scopes,
         }
 
+    async def revoke_token(self, token: str) -> None:
+        if not token or not token.strip():
+            raise ValueError("Token is required")
+
+        response = await self._http.post(
+            "https://oauth2.googleapis.com/revoke",
+            data={"token": token},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response.raise_for_status()
+
+    def _parse_scope_string(self, scope: Optional[str]) -> list[str]:
+        if not scope:
+            return []
+
+        return self._normalize_scopes(scope.split())
+
+    def _normalize_scopes(self, scopes: list[str]) -> list[str]:
+        seen: set[str] = set()
+        normalized: list[str] = []
+
+        for scope in scopes:
+            trimmed = scope.strip()
+            if not trimmed or trimmed in seen:
+                continue
+            seen.add(trimmed)
+            normalized.append(trimmed)
+
+        return normalized

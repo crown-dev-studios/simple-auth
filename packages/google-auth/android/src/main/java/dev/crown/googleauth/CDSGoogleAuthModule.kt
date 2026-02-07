@@ -2,25 +2,28 @@ package dev.crown.googleauth
 
 import android.app.Activity
 import android.content.Intent
-import com.facebook.react.bridge.Arguments
+import android.os.Handler
+import android.os.Looper
 import com.facebook.react.bridge.ActivityEventListener
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import dev.crown.simpleauth.googleauth.GoogleAuthClient
 import dev.crown.simpleauth.googleauth.GoogleAuthConfig
 import dev.crown.simpleauth.googleauth.GoogleAuthException
+import dev.crown.simpleauth.googleauth.GoogleAuthResult
+import dev.crown.simpleauth.googleauth.GoogleAuthScopeMode
 import dev.crown.simpleauth.googleauth.GoogleAuthSignInStep
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import android.os.Handler
-import android.os.Looper
 
 private const val AUTH_REQUEST_CODE = 9112
 private const val SIGN_IN_TIMEOUT_MS = 60_000L
@@ -70,42 +73,56 @@ class CDSGoogleAuthModule(private val reactContext: ReactApplicationContext) :
             return
         }
 
-        if (pendingPromise != null) {
-            promise.reject("sign_in_in_progress", "Google sign-in already in progress")
+        launchAuthStep(activity, promise) {
+            client.beginSignIn(activity)
+        }
+    }
+
+    @ReactMethod
+    fun updateScopes(scopes: ReadableArray?, mode: String, promise: Promise) {
+        val activity = currentActivity
+        if (activity == null) {
+            promise.reject("activity_error", "Current activity is not available")
             return
         }
 
-        pendingPromise = promise
-        val runnable = Runnable {
-            rejectPending("sign_in_timeout", "Google sign-in timed out", null)
+        val parsedMode = when (mode.lowercase()) {
+            "add" -> GoogleAuthScopeMode.ADD
+            "replace" -> GoogleAuthScopeMode.REPLACE
+            else -> {
+                promise.reject("validation_error", "mode must be 'add' or 'replace'")
+                return
+            }
         }
-        pendingTimeoutRunnable = runnable
-        mainHandler.postDelayed(runnable, SIGN_IN_TIMEOUT_MS)
+
+        launchAuthStep(activity, promise) {
+            client.updateScopes(
+                activity = activity,
+                scopes = parseScopes(scopes),
+                mode = parsedMode,
+            )
+        }
+    }
+
+    @ReactMethod
+    fun getGrantedScopes(promise: Promise) {
+        promise.resolve(Arguments.fromList(client.getGrantedScopes()))
+    }
+
+    @ReactMethod
+    fun revokeAccess(promise: Promise) {
+        if (pendingPromise != null) {
+            rejectPending("sign_in_canceled", "Google sign-in canceled", null)
+        }
 
         coroutineScope.launch {
             try {
-                when (val step = client.beginSignIn(activity)) {
-                    is GoogleAuthSignInStep.Completed -> {
-                        val response = Arguments.createMap()
-                        response.putString("authCode", step.authCode)
-                        resolvePending(response)
-                    }
-
-                    is GoogleAuthSignInStep.RequiresResolution -> {
-                        activity.startIntentSenderForResult(
-                            step.intentSenderRequest.intentSender,
-                            AUTH_REQUEST_CODE,
-                            null,
-                            0,
-                            0,
-                            0,
-                        )
-                    }
-                }
+                client.revokeAccess()
+                promise.resolve(null)
             } catch (e: GoogleAuthException) {
-                rejectPending(e.errorCode.code, e.message ?: "Google sign-in failed", e)
+                promise.reject(e.errorCode.code, e.message ?: "Failed to revoke access", e)
             } catch (e: Exception) {
-                rejectPending("sign_in_failed", e.localizedMessage ?: "Google sign-in failed", e)
+                promise.reject("revoke_failed", e.localizedMessage ?: "Failed to revoke access", e)
             }
         }
     }
@@ -133,10 +150,8 @@ class CDSGoogleAuthModule(private val reactContext: ReactApplicationContext) :
 
         coroutineScope.launch {
             try {
-                val authCode = client.completeSignIn(resultCode, data)
-                val response = Arguments.createMap()
-                response.putString("authCode", authCode)
-                resolvePending(response)
+                val result = client.completeSignIn(resultCode, data)
+                resolvePending(toResultMap(result))
             } catch (e: GoogleAuthException) {
                 rejectPending(e.errorCode.code, e.message ?: "Google sign-in failed", e)
             } catch (e: Exception) {
@@ -157,7 +172,7 @@ class CDSGoogleAuthModule(private val reactContext: ReactApplicationContext) :
             try {
                 client.completeSignIn(Activity.RESULT_CANCELED, null)
             } catch (_: Exception) {
-                // Intentionally ignore - we only want to clear internal SDK state.
+                // Ignore cleanup errors.
             }
         }
     }
@@ -170,11 +185,63 @@ class CDSGoogleAuthModule(private val reactContext: ReactApplicationContext) :
             try {
                 client.completeSignIn(Activity.RESULT_CANCELED, null)
             } catch (_: Exception) {
-                // Intentionally ignore - we only want to clear internal SDK state.
+                // Ignore cleanup errors.
             }
         }
         coroutineScope.cancel()
         super.onCatalystInstanceDestroy()
+    }
+
+    private fun launchAuthStep(
+        activity: Activity,
+        promise: Promise,
+        operation: suspend () -> GoogleAuthSignInStep,
+    ) {
+        if (pendingPromise != null) {
+            promise.reject("sign_in_in_progress", "Google sign-in already in progress")
+            return
+        }
+
+        pendingPromise = promise
+        val runnable = Runnable {
+            rejectPending("sign_in_timeout", "Google sign-in timed out", null)
+        }
+        pendingTimeoutRunnable = runnable
+        mainHandler.postDelayed(runnable, SIGN_IN_TIMEOUT_MS)
+
+        coroutineScope.launch {
+            try {
+                when (val step = operation()) {
+                    is GoogleAuthSignInStep.Completed -> {
+                        resolvePending(toResultMap(step.result))
+                    }
+
+                    is GoogleAuthSignInStep.RequiresResolution -> {
+                        activity.startIntentSenderForResult(
+                            step.intentSenderRequest.intentSender,
+                            AUTH_REQUEST_CODE,
+                            null,
+                            0,
+                            0,
+                            0,
+                        )
+                    }
+                }
+            } catch (e: GoogleAuthException) {
+                rejectPending(e.errorCode.code, e.message ?: "Google sign-in failed", e)
+            } catch (e: Exception) {
+                rejectPending("sign_in_failed", e.localizedMessage ?: "Google sign-in failed", e)
+            }
+        }
+    }
+
+    private fun parseScopes(scopes: ReadableArray?): List<String> {
+        return scopes?.toArrayList()?.mapNotNull { it as? String } ?: emptyList()
+    }
+
+    private fun toResultMap(result: GoogleAuthResult) = Arguments.createMap().apply {
+        putString("authCode", result.authCode)
+        putArray("grantedScopes", Arguments.fromList(result.grantedScopes))
     }
 
     private fun resolvePending(result: Any?) {

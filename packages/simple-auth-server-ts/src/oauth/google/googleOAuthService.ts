@@ -7,6 +7,10 @@ export interface GoogleOAuthConfig {
   redirectUri?: string
 }
 
+export interface ExchangeAuthCodeOptions {
+  requiredScopes?: string[]
+}
+
 export type GoogleOAuthUserInfo = {
   sub: string
   email: string
@@ -16,8 +20,21 @@ export type GoogleOAuthUserInfo = {
   rawPayload: Record<string, unknown>
 }
 
+export type GoogleOAuthExchangeData = {
+  user: GoogleOAuthUserInfo
+  refreshToken?: string
+  accessToken?: string
+  idToken: string
+  scope?: string
+  grantedScopes: string[]
+}
+
 export type GoogleOAuthExchangeResult =
-  | { success: true; data: { user: GoogleOAuthUserInfo; refreshToken?: string; accessToken?: string; idToken: string } }
+  | { success: true; data: GoogleOAuthExchangeData }
+  | { success: false; error: Error }
+
+export type GoogleOAuthRevokeResult =
+  | { success: true }
   | { success: false; error: Error }
 
 const GoogleOAuthErrorResponseSchema = z
@@ -27,7 +44,7 @@ const GoogleOAuthErrorResponseSchema = z
   })
   .passthrough()
 
-class GoogleOAuthTokenExchangeError extends Error {
+class GoogleOAuthRequestError extends Error {
   readonly httpStatus?: number
   readonly oauthError?: string
   readonly oauthErrorDescription?: string
@@ -42,10 +59,22 @@ class GoogleOAuthTokenExchangeError extends Error {
     } = {}
   ) {
     super(message, { cause: options.cause })
-    this.name = 'GoogleOAuthTokenExchangeError'
+    this.name = 'GoogleOAuthRequestError'
     this.httpStatus = options.httpStatus
     this.oauthError = options.oauthError
     this.oauthErrorDescription = options.oauthErrorDescription
+  }
+}
+
+export class GoogleOAuthMissingScopesError extends Error {
+  readonly missingScopes: string[]
+  readonly grantedScopes: string[]
+
+  constructor(missingScopes: string[], grantedScopes: string[]) {
+    super(`Google OAuth token is missing required scopes: ${missingScopes.join(', ')}`)
+    this.name = 'GoogleOAuthMissingScopesError'
+    this.missingScopes = missingScopes
+    this.grantedScopes = grantedScopes
   }
 }
 
@@ -58,7 +87,7 @@ export class GoogleOAuthService {
     this.redirectUri = config.redirectUri
   }
 
-  async exchangeAuthCode(authCode: string): Promise<GoogleOAuthExchangeResult> {
+  async exchangeAuthCode(authCode: string, options: ExchangeAuthCodeOptions = {}): Promise<GoogleOAuthExchangeResult> {
     try {
       const { tokens } = await this.client.getToken({
         code: authCode,
@@ -79,6 +108,21 @@ export class GoogleOAuthService {
         return { success: false, error: new Error('Invalid token payload') }
       }
 
+      const scope = typeof tokens.scope === 'string' && tokens.scope.length > 0 ? tokens.scope : undefined
+      const grantedScopes = this.parseScopeString(scope)
+
+      const requiredScopes = this.normalizeScopes(options.requiredScopes ?? [])
+      if (requiredScopes.length > 0) {
+        const grantedScopeSet = new Set(grantedScopes)
+        const missingScopes = requiredScopes.filter((entry) => !grantedScopeSet.has(entry))
+        if (missingScopes.length > 0) {
+          return {
+            success: false,
+            error: new GoogleOAuthMissingScopesError(missingScopes, grantedScopes),
+          }
+        }
+      }
+
       return {
         success: true,
         data: {
@@ -93,6 +137,8 @@ export class GoogleOAuthService {
           refreshToken: tokens.refresh_token ?? undefined,
           accessToken: tokens.access_token ?? undefined,
           idToken: tokens.id_token,
+          scope,
+          grantedScopes,
         },
       }
     } catch (error) {
@@ -100,7 +146,28 @@ export class GoogleOAuthService {
     }
   }
 
+  async revokeToken(token: string): Promise<GoogleOAuthRevokeResult> {
+    if (!token || token.trim().length === 0) {
+      return { success: false, error: new Error('Token is required') }
+    }
+
+    try {
+      await this.client.revokeToken(token)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: this.normalizeRevokeError(error) }
+    }
+  }
+
   private normalizeExchangeError(error: unknown): Error {
+    return this.normalizeGoogleOAuthError('token exchange', error)
+  }
+
+  private normalizeRevokeError(error: unknown): Error {
+    return this.normalizeGoogleOAuthError('token revoke', error)
+  }
+
+  private normalizeGoogleOAuthError(operation: 'token exchange' | 'token revoke', error: unknown): Error {
     if (error instanceof gaxios.GaxiosError) {
       const status = error.response?.status
       const statusText = error.response?.statusText
@@ -111,8 +178,8 @@ export class GoogleOAuthService {
       const parsed = GoogleOAuthErrorResponseSchema.safeParse(responseData)
       if (parsed.success) {
         const suffix = parsed.data.error_description ? `: ${parsed.data.error_description}` : ''
-        return new GoogleOAuthTokenExchangeError(
-          `Google OAuth token exchange failed (${httpLabel}): ${parsed.data.error}${suffix}`,
+        return new GoogleOAuthRequestError(
+          `Google OAuth ${operation} failed (${httpLabel}): ${parsed.data.error}${suffix}`,
           {
             cause: error,
             httpStatus: typeof status === 'number' ? status : undefined,
@@ -122,7 +189,7 @@ export class GoogleOAuthService {
         )
       }
 
-      return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed (${httpLabel}): ${error.message}`, {
+      return new GoogleOAuthRequestError(`Google OAuth ${operation} failed (${httpLabel}): ${error.message}`, {
         cause: error,
         httpStatus: typeof status === 'number' ? status : undefined,
       })
@@ -131,15 +198,40 @@ export class GoogleOAuthService {
     if (error instanceof Error) {
       const code = (error as NodeJS.ErrnoException).code
       if (typeof code === 'string' && code.length > 0) {
-        return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed (${code}): ${error.message}`, {
+        return new GoogleOAuthRequestError(`Google OAuth ${operation} failed (${code}): ${error.message}`, {
           cause: error,
         })
       }
 
-      return new GoogleOAuthTokenExchangeError(`Google OAuth token exchange failed: ${error.message}`, { cause: error })
+      return new GoogleOAuthRequestError(`Google OAuth ${operation} failed: ${error.message}`, { cause: error })
     }
 
-    return new Error('Auth code exchange failed')
+    return new Error(`Google OAuth ${operation} failed`)
+  }
+
+  private parseScopeString(scope: string | undefined): string[] {
+    if (!scope) {
+      return []
+    }
+
+    return this.normalizeScopes(scope.split(/\s+/g))
+  }
+
+  private normalizeScopes(scopes: string[]): string[] {
+    const seen = new Set<string>()
+    const normalized: string[] = []
+
+    for (const scope of scopes) {
+      const trimmed = scope.trim()
+      if (!trimmed || seen.has(trimmed)) {
+        continue
+      }
+
+      seen.add(trimmed)
+      normalized.push(trimmed)
+    }
+
+    return normalized
   }
 
   private parseResponseData(data: unknown): unknown {

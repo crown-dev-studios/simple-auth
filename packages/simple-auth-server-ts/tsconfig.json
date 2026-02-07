@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@crown-dev-studios/simple-auth-shared-types": ["../shared-types/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

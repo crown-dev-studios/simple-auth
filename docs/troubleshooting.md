@@ -11,7 +11,22 @@ If sign-in completes but `serverAuthCode` is empty, double-check:
 - the iOS app bundle is authorized in Google Console
 - the reversed client ID URL scheme exists in `Info.plist` (Expo plugin should set it)
 
-## Server: Google code exchange fails (invalid_grant / redirect_uri_mismatch)
+## Scope update: `no_scope_change_required`
+
+`updateGoogleScopes` returned a no-op result.
+- In `add` mode, all requested scopes were already granted.
+- In `replace` mode, the requested scope set exactly matched current grants.
+
+Only call scope updates when your desired scope set has actually changed.
+
+## Server: missing required scopes
+
+If server exchange fails with a missing-scope error:
+- verify client requested the scope during sign-in or `updateGoogleScopes`
+- inspect `grantedScopes` returned by client and server exchange response
+- for TS/Python server SDKs, check `requiredScopes` / `required_scopes` input
+
+## Server: Google code exchange fails (`invalid_grant` / `redirect_uri_mismatch`)
 
 If your server exchange fails with `invalid_grant` or `redirect_uri_mismatch`, the most common causes are:
 - wrong **Web client** `clientId` or wrong `clientSecret`

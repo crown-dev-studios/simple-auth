@@ -37,8 +37,18 @@ data class GoogleAuthConfig(
     val scopes: List<String> = listOf("openid", "email", "profile"),
 )
 
+enum class GoogleAuthScopeMode {
+    ADD,
+    REPLACE,
+}
+
+data class GoogleAuthResult(
+    val authCode: String,
+    val grantedScopes: List<String>,
+)
+
 sealed interface GoogleAuthSignInStep {
-    data class Completed(val authCode: String) : GoogleAuthSignInStep
+    data class Completed(val result: GoogleAuthResult) : GoogleAuthSignInStep
     data class RequiresResolution(val intentSenderRequest: IntentSenderRequest) : GoogleAuthSignInStep
 }
 
@@ -50,6 +60,9 @@ enum class GoogleAuthErrorCode(val code: String) {
     ACTIVITY_ERROR("activity_error"),
     AUTH_CODE_FAILED("auth_code_failed"),
     SIGN_IN_FAILED("sign_in_failed"),
+    NOT_SIGNED_IN("not_signed_in"),
+    NO_SCOPE_CHANGE_REQUIRED("no_scope_change_required"),
+    REVOKE_FAILED("revoke_failed"),
     SIGN_OUT_FAILED("sign_out_failed"),
 }
 
@@ -61,12 +74,6 @@ class GoogleAuthException(
 
 /**
  * Pure native Google auth-code flow (no React Native dependency).
- *
- * This client performs:
- * 1) Credential selection via Credential Manager (Google ID credential)
- * 2) Offline access authorization to obtain a one-time server auth code
- *
- * The flow may require a UI resolution step (IntentSender) via Activity Result API.
  */
 class GoogleAuthClient(context: Context) {
     private val appContext = context.applicationContext
@@ -80,14 +87,199 @@ class GoogleAuthClient(context: Context) {
     private var signInTimeoutRunnable: Runnable? = null
     private var lastTimedOutAtMs: Long? = null
 
+    private var cachedGrantedScopes: List<String> = emptyList()
+    private var pendingRequestedScopes: List<String> = emptyList()
+    private var pendingMode: GoogleAuthScopeMode = GoogleAuthScopeMode.REPLACE
+
     fun configure(config: GoogleAuthConfig) {
         if (config.webClientId.isBlank()) {
             throw GoogleAuthException(GoogleAuthErrorCode.CONFIG_ERROR, "webClientId is required")
         }
-        this.config = config
+
+        this.config = GoogleAuthConfig(
+            webClientId = config.webClientId,
+            scopes = normalizeScopes(config.scopes),
+        )
+    }
+
+    fun getGrantedScopes(): List<String> {
+        return cachedGrantedScopes
     }
 
     suspend fun beginSignIn(activity: Activity): GoogleAuthSignInStep {
+        val authConfig = config
+            ?: throw GoogleAuthException(GoogleAuthErrorCode.CONFIG_ERROR, "Google auth not configured")
+
+        return startSignIn(
+            activity = activity,
+            requestedScopes = authConfig.scopes,
+            mode = GoogleAuthScopeMode.REPLACE,
+        )
+    }
+
+    suspend fun updateScopes(
+        activity: Activity,
+        scopes: List<String>,
+        mode: GoogleAuthScopeMode,
+    ): GoogleAuthSignInStep {
+        val authConfig = config
+            ?: throw GoogleAuthException(GoogleAuthErrorCode.CONFIG_ERROR, "Google auth not configured")
+
+        if (cachedGrantedScopes.isEmpty()) {
+            throw GoogleAuthException(GoogleAuthErrorCode.NOT_SIGNED_IN, "No Google session available")
+        }
+
+        val normalizedTarget = normalizeScopes(scopes)
+        val current = cachedGrantedScopes
+        val currentSet = current.toSet()
+        val targetSet = normalizedTarget.toSet()
+
+        val requestedScopes = when (mode) {
+            GoogleAuthScopeMode.ADD -> {
+                val toAdd = normalizedTarget.filterNot { currentSet.contains(it) }
+                if (toAdd.isEmpty()) {
+                    throw GoogleAuthException(
+                        GoogleAuthErrorCode.NO_SCOPE_CHANGE_REQUIRED,
+                        "Requested scopes are already granted",
+                    )
+                }
+                toAdd
+            }
+
+            GoogleAuthScopeMode.REPLACE -> {
+                if (targetSet == currentSet) {
+                    throw GoogleAuthException(
+                        GoogleAuthErrorCode.NO_SCOPE_CHANGE_REQUIRED,
+                        "Requested scopes match current granted scopes",
+                    )
+                }
+
+                val hasRemovals = !currentSet.all { targetSet.contains(it) }
+                if (hasRemovals) {
+                    revokeAccess()
+                }
+                normalizedTarget
+            }
+        }
+
+        // If caller passes empty list in replace mode, fall back to configured baseline scopes.
+        val finalRequested = if (requestedScopes.isEmpty()) authConfig.scopes else requestedScopes
+
+        return startSignIn(
+            activity = activity,
+            requestedScopes = finalRequested,
+            mode = mode,
+        )
+    }
+
+    suspend fun completeSignIn(resultCode: Int, data: Intent?): GoogleAuthResult {
+        val startedAtMs = signInStartedAtMs
+        if (startedAtMs == null) {
+            val timedOutRecently = lastTimedOutAtMs?.let { SystemClock.elapsedRealtime() - it <= DEFAULT_SIGN_IN_TIMEOUT_MS }
+                ?: false
+            if (timedOutRecently) {
+                throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_TIMEOUT, "Google sign-in timed out")
+            }
+            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_FAILED, "No Google sign-in in progress")
+        }
+
+        val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+        if (elapsedMs > DEFAULT_SIGN_IN_TIMEOUT_MS) {
+            clearSignInState()
+            lastTimedOutAtMs = SystemClock.elapsedRealtime()
+            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_TIMEOUT, "Google sign-in timed out")
+        }
+
+        if (resultCode != Activity.RESULT_OK) {
+            clearSignInState()
+            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_CANCELED, "Google sign-in canceled")
+        }
+
+        if (data == null) {
+            clearSignInState()
+            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_CANCELED, "Google sign-in canceled")
+        }
+
+        return try {
+            val result = authorizationClient.getAuthorizationResultFromIntent(data)
+            val authCode = result.serverAuthCode
+            if (authCode.isNullOrBlank()) {
+                throw GoogleAuthException(GoogleAuthErrorCode.AUTH_CODE_FAILED, "Missing server auth code")
+            }
+
+            val fallback = when (pendingMode) {
+                GoogleAuthScopeMode.ADD -> normalizeScopes(cachedGrantedScopes + pendingRequestedScopes)
+                GoogleAuthScopeMode.REPLACE -> normalizeScopes(pendingRequestedScopes)
+            }
+            val grantedScopes = extractGrantedScopes(result, fallback)
+
+            val authResult = GoogleAuthResult(
+                authCode = authCode,
+                grantedScopes = grantedScopes,
+            )
+            cachedGrantedScopes = grantedScopes
+            clearSignInState()
+            authResult
+        } catch (e: Exception) {
+            clearSignInState()
+            throw mapException(e)
+        }
+    }
+
+    suspend fun completeSignIn(data: Intent?): GoogleAuthResult {
+        return completeSignIn(Activity.RESULT_OK, data)
+    }
+
+    suspend fun revokeAccess() {
+        try {
+            signOut()
+        } catch (e: Exception) {
+            throw GoogleAuthException(
+                GoogleAuthErrorCode.REVOKE_FAILED,
+                e.localizedMessage ?: "Failed to revoke Google access",
+                e,
+            )
+        }
+    }
+
+    suspend fun signOut() {
+        try {
+            awaitWithTimeout(
+                timeoutMs = SIGN_OUT_TIMEOUT_MS,
+                onTimeout = {},
+                timeoutException = GoogleAuthException(
+                    GoogleAuthErrorCode.SIGN_OUT_FAILED,
+                    "Failed to clear credentials",
+                ),
+            ) { callback ->
+                val executor = ContextCompat.getMainExecutor(appContext)
+                credentialManager.clearCredentialStateAsync(
+                    ClearCredentialStateRequest(),
+                    null,
+                    executor,
+                    object : CredentialManagerCallback<Void?, ClearCredentialStateException> {
+                        override fun onResult(result: Void?) {
+                            callback(Result.success(Unit))
+                        }
+
+                        override fun onError(e: ClearCredentialStateException) {
+                            callback(Result.failure(e))
+                        }
+                    },
+                )
+            }
+
+            cachedGrantedScopes = emptyList()
+        } catch (e: Exception) {
+            throw mapException(e)
+        }
+    }
+
+    private suspend fun startSignIn(
+        activity: Activity,
+        requestedScopes: List<String>,
+        mode: GoogleAuthScopeMode,
+    ): GoogleAuthSignInStep {
         if (activity.isFinishing) {
             throw GoogleAuthException(GoogleAuthErrorCode.ACTIVITY_ERROR, "Activity is finishing")
         }
@@ -99,8 +291,12 @@ class GoogleAuthClient(context: Context) {
             throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_IN_PROGRESS, "Google sign-in already in progress")
         }
 
+        val normalizedRequestedScopes = normalizeScopes(requestedScopes)
+
         val startedAtMs = SystemClock.elapsedRealtime()
         signInStartedAtMs = startedAtMs
+        pendingRequestedScopes = normalizedRequestedScopes
+        pendingMode = mode
         scheduleSignInTimeout()
 
         try {
@@ -155,7 +351,7 @@ class GoogleAuthClient(context: Context) {
                 throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_FAILED, "Unexpected credential type")
             }
 
-            val scopes = authConfig.scopes.map { Scope(it) }
+            val scopes = normalizedRequestedScopes.map { Scope(it) }
             val authorizationRequest = AuthorizationRequest.Builder()
                 .setRequestedScopes(scopes)
                 .requestOfflineAccess(authConfig.webClientId)
@@ -195,90 +391,58 @@ class GoogleAuthClient(context: Context) {
                 throw GoogleAuthException(GoogleAuthErrorCode.AUTH_CODE_FAILED, "Missing server auth code")
             }
 
+            val fallback = when (mode) {
+                GoogleAuthScopeMode.ADD -> normalizeScopes(cachedGrantedScopes + normalizedRequestedScopes)
+                GoogleAuthScopeMode.REPLACE -> normalizedRequestedScopes
+            }
+            val grantedScopes = extractGrantedScopes(authorizationResult, fallback)
+
+            val authResult = GoogleAuthResult(
+                authCode = authCode,
+                grantedScopes = grantedScopes,
+            )
+            cachedGrantedScopes = grantedScopes
             clearSignInState()
-            return GoogleAuthSignInStep.Completed(authCode)
+            return GoogleAuthSignInStep.Completed(authResult)
         } catch (e: Exception) {
             clearSignInState()
             throw mapException(e)
         }
     }
 
-    suspend fun completeSignIn(resultCode: Int, data: Intent?): String {
-        val startedAtMs = signInStartedAtMs
-        if (startedAtMs == null) {
-            val timedOutRecently = lastTimedOutAtMs?.let { SystemClock.elapsedRealtime() - it <= DEFAULT_SIGN_IN_TIMEOUT_MS }
-                ?: false
-            if (timedOutRecently) {
-                throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_TIMEOUT, "Google sign-in timed out")
+    private fun extractGrantedScopes(result: AuthorizationResult, fallback: List<String>): List<String> {
+        val extracted = try {
+            val getGrantedScopes = result.javaClass.methods.firstOrNull {
+                it.name == "getGrantedScopes" && it.parameterCount == 0
             }
-            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_FAILED, "No Google sign-in in progress")
-        }
+            val raw = getGrantedScopes?.invoke(result)
 
-        val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
-        if (elapsedMs > DEFAULT_SIGN_IN_TIMEOUT_MS) {
-            clearSignInState()
-            lastTimedOutAtMs = SystemClock.elapsedRealtime()
-            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_TIMEOUT, "Google sign-in timed out")
-        }
+            when (raw) {
+                is Iterable<*> -> raw.mapNotNull { scopeObj ->
+                    val getScopeUri = scopeObj?.javaClass?.methods?.firstOrNull {
+                        it.name == "getScopeUri" && it.parameterCount == 0
+                    }
+                    getScopeUri?.invoke(scopeObj) as? String
+                }
 
-        if (resultCode != Activity.RESULT_OK) {
-            clearSignInState()
-            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_CANCELED, "Google sign-in canceled")
-        }
-
-        if (data == null) {
-            clearSignInState()
-            throw GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_CANCELED, "Google sign-in canceled")
-        }
-
-        return try {
-            val result = authorizationClient.getAuthorizationResultFromIntent(data)
-            val authCode = result.serverAuthCode
-            if (authCode.isNullOrBlank()) {
-                throw GoogleAuthException(GoogleAuthErrorCode.AUTH_CODE_FAILED, "Missing server auth code")
+                else -> emptyList()
             }
-            clearSignInState()
-            authCode
-        } catch (e: Exception) {
-            clearSignInState()
-            throw mapException(e)
+        } catch (_: Exception) {
+            emptyList()
         }
+
+        return normalizeScopes(if (extracted.isNotEmpty()) extracted else fallback)
     }
 
-    suspend fun completeSignIn(data: Intent?): String {
-        // Convenience for Activity Result API callers that already checked resultCode.
-        return completeSignIn(Activity.RESULT_OK, data)
-    }
-
-    suspend fun signOut() {
-        try {
-            awaitWithTimeout(
-                timeoutMs = SIGN_OUT_TIMEOUT_MS,
-                onTimeout = {},
-                timeoutException = GoogleAuthException(
-                    GoogleAuthErrorCode.SIGN_OUT_FAILED,
-                    "Failed to clear credentials",
-                ),
-            ) { callback ->
-                val executor = ContextCompat.getMainExecutor(appContext)
-                credentialManager.clearCredentialStateAsync(
-                    ClearCredentialStateRequest(),
-                    null,
-                    executor,
-                    object : CredentialManagerCallback<Void?, ClearCredentialStateException> {
-                        override fun onResult(result: Void?) {
-                            callback(Result.success(Unit))
-                        }
-
-                        override fun onError(e: ClearCredentialStateException) {
-                            callback(Result.failure(e))
-                        }
-                    },
-                )
+    private fun normalizeScopes(scopes: List<String>): List<String> {
+        val seen = linkedSetOf<String>()
+        for (scope in scopes) {
+            val trimmed = scope.trim()
+            if (trimmed.isNotEmpty()) {
+                seen.add(trimmed)
             }
-        } catch (e: Exception) {
-            throw mapException(e)
         }
+        return seen.toList()
     }
 
     private fun scheduleSignInTimeout() {
@@ -295,6 +459,8 @@ class GoogleAuthClient(context: Context) {
         signInTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         signInTimeoutRunnable = null
         signInStartedAtMs = null
+        pendingRequestedScopes = emptyList()
+        pendingMode = GoogleAuthScopeMode.REPLACE
     }
 
     private fun remainingTimeoutMs(startedAtMs: Long): Long {
@@ -342,11 +508,13 @@ class GoogleAuthClient(context: Context) {
                 "Google sign-in canceled",
                 error,
             )
+
             is GetCredentialException -> GoogleAuthException(
                 GoogleAuthErrorCode.SIGN_IN_FAILED,
                 error.localizedMessage ?: "Google sign-in failed",
                 error,
             )
+
             is ApiException -> {
                 if (error.statusCode == CommonStatusCodes.CANCELED) {
                     GoogleAuthException(GoogleAuthErrorCode.SIGN_IN_CANCELED, "Google sign-in canceled", error)
@@ -358,11 +526,13 @@ class GoogleAuthClient(context: Context) {
                     )
                 }
             }
+
             is ClearCredentialStateException -> GoogleAuthException(
                 GoogleAuthErrorCode.SIGN_OUT_FAILED,
                 error.localizedMessage ?: "Failed to clear credentials",
                 error,
             )
+
             else -> GoogleAuthException(
                 GoogleAuthErrorCode.SIGN_IN_FAILED,
                 error.localizedMessage ?: "Google sign-in failed",

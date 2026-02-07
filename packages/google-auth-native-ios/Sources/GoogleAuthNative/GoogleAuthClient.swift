@@ -25,13 +25,31 @@ public struct GoogleAuthConfiguration: Sendable {
     }
 }
 
+public enum GoogleAuthScopeMode: String, Sendable {
+    case add
+    case replace
+}
+
+public struct GoogleAuthResult: Sendable {
+    public let authCode: String
+    public let grantedScopes: [String]
+
+    public init(authCode: String, grantedScopes: [String]) {
+        self.authCode = authCode
+        self.grantedScopes = grantedScopes
+    }
+}
+
 public enum GoogleAuthError: Error {
     case configMissing
     case signInInProgress
+    case notSignedIn
+    case noScopeChangeRequired
     case canceled
     case timeout
     case missingAuthCode
     case presentationError
+    case revokeFailed(Error)
     case underlying(Error)
 }
 
@@ -56,17 +74,63 @@ public final class GoogleAuthClient {
     public init() {}
 
     public func configure(_ config: GoogleAuthConfiguration) {
-        self.config = config
+        let normalizedScopes = normalizeScopes(config.scopes)
+        self.config = GoogleAuthConfiguration(
+            iosClientId: config.iosClientId,
+            webClientId: config.webClientId,
+            scopes: normalizedScopes
+        )
+
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(
             clientID: config.iosClientId,
             serverClientID: config.webClientId
         )
     }
 
+    public func getGrantedScopes() -> [String] {
+        normalizeScopes(GIDSignIn.sharedInstance.currentUser?.grantedScopes ?? [])
+    }
+
+    public func signOut() {
+        GIDSignIn.sharedInstance.signOut()
+    }
+
+    public func revokeAccess() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            GIDSignIn.sharedInstance.disconnect { error in
+                if let error {
+                    continuation.resume(throwing: GoogleAuthError.revokeFailed(error))
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
+    private func normalizeScopes(_ scopes: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalized: [String] = []
+
+        for scope in scopes {
+            let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                normalized.append(trimmed)
+            }
+        }
+
+        return normalized
+    }
+
+    private func mergeScopes(_ lhs: [String], _ rhs: [String]) -> [String] {
+        normalizeScopes(lhs + rhs)
+    }
+
     private func signInInternal(
         timeoutSeconds: TimeInterval,
+        fallbackScopes: [String],
         start: (@escaping @Sendable (GIDSignInResult?, Error?) -> Void) -> Void
-    ) async throws -> String {
+    ) async throws -> GoogleAuthResult {
         let clampedTimeout = max(1, timeoutSeconds)
         let signInErrorDomain = googleSignInErrorDomain
         let signInCanceledErrorCode = googleSignInCanceledErrorCode
@@ -83,6 +147,7 @@ public final class GoogleAuthClient {
 
             start { @Sendable result, error in
                 let authCode = result?.serverAuthCode
+                let grantedScopesCandidate = result?.user.grantedScopes ?? fallbackScopes
 
                 let errorInfo: (domain: String, code: Int, description: String)?
                 if let error {
@@ -92,7 +157,7 @@ public final class GoogleAuthClient {
                     errorInfo = nil
                 }
 
-                Task {
+                Task { @MainActor in
                     guard await gate.tryFinish() else { return }
                     timeoutTask.cancel()
 
@@ -116,7 +181,8 @@ public final class GoogleAuthClient {
                         return
                     }
 
-                    continuation.resume(returning: authCode)
+                    let grantedScopes = self.normalizeScopes(grantedScopesCandidate)
+                    continuation.resume(returning: GoogleAuthResult(authCode: authCode, grantedScopes: grantedScopes))
                 }
             }
         }
@@ -126,7 +192,7 @@ public final class GoogleAuthClient {
     public func signIn(
         presentingViewController: UIViewController,
         timeoutSeconds: TimeInterval = 60
-    ) async throws -> String {
+    ) async throws -> GoogleAuthResult {
         guard !isSigningIn else {
             throw GoogleAuthError.signInInProgress
         }
@@ -142,13 +208,12 @@ public final class GoogleAuthClient {
         isSigningIn = true
         defer { isSigningIn = false }
 
-        // Ensure configuration remains consistent even if other code mutates it.
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(
             clientID: config.iosClientId,
             serverClientID: config.webClientId
         )
 
-        return try await signInInternal(timeoutSeconds: timeoutSeconds) { completion in
+        return try await signInInternal(timeoutSeconds: timeoutSeconds, fallbackScopes: config.scopes) { completion in
             GIDSignIn.sharedInstance.signIn(
                 withPresenting: presentingViewController,
                 hint: nil,
@@ -158,13 +223,98 @@ public final class GoogleAuthClient {
             }
         }
     }
+
+    public func updateScopes(
+        scopes: [String],
+        mode: GoogleAuthScopeMode,
+        presentingViewController: UIViewController,
+        timeoutSeconds: TimeInterval = 60
+    ) async throws -> GoogleAuthResult {
+        guard !isSigningIn else {
+            throw GoogleAuthError.signInInProgress
+        }
+
+        guard let config else {
+            throw GoogleAuthError.configMissing
+        }
+
+        guard presentingViewController.viewIfLoaded?.window != nil else {
+            throw GoogleAuthError.presentationError
+        }
+
+        guard let currentUser = GIDSignIn.sharedInstance.currentUser else {
+            throw GoogleAuthError.notSignedIn
+        }
+
+        let targetScopes = normalizeScopes(scopes)
+        let currentScopes = getGrantedScopes()
+        let currentSet = Set(currentScopes)
+        let targetSet = Set(targetScopes)
+
+        let requestedScopes: [String]
+        switch mode {
+        case .add:
+            requestedScopes = targetScopes.filter { !currentSet.contains($0) }
+            if requestedScopes.isEmpty {
+                throw GoogleAuthError.noScopeChangeRequired
+            }
+
+        case .replace:
+            if targetSet == currentSet {
+                throw GoogleAuthError.noScopeChangeRequired
+            }
+
+            let hasRemovals = !currentSet.isSubset(of: targetSet)
+            if hasRemovals {
+                try await revokeAccess()
+            }
+            requestedScopes = targetScopes
+        }
+
+        isSigningIn = true
+        defer { isSigningIn = false }
+
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(
+            clientID: config.iosClientId,
+            serverClientID: config.webClientId
+        )
+
+        switch mode {
+        case .add:
+            return try await signInInternal(
+                timeoutSeconds: timeoutSeconds,
+                fallbackScopes: mergeScopes(currentScopes, requestedScopes)
+            ) { completion in
+                currentUser.addScopes(
+                    requestedScopes,
+                    presenting: presentingViewController
+                ) { result, error in
+                    completion(result, error)
+                }
+            }
+
+        case .replace:
+            return try await signInInternal(
+                timeoutSeconds: timeoutSeconds,
+                fallbackScopes: requestedScopes
+            ) { completion in
+                GIDSignIn.sharedInstance.signIn(
+                    withPresenting: presentingViewController,
+                    hint: nil,
+                    additionalScopes: requestedScopes
+                ) { result, error in
+                    completion(result, error)
+                }
+            }
+        }
+    }
 #endif
 
 #if canImport(AppKit)
     public func signIn(
         presentingWindow: NSWindow,
         timeoutSeconds: TimeInterval = 60
-    ) async throws -> String {
+    ) async throws -> GoogleAuthResult {
         guard !isSigningIn else {
             throw GoogleAuthError.signInInProgress
         }
@@ -180,13 +330,12 @@ public final class GoogleAuthClient {
         isSigningIn = true
         defer { isSigningIn = false }
 
-        // Ensure configuration remains consistent even if other code mutates it.
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(
             clientID: config.iosClientId,
             serverClientID: config.webClientId
         )
 
-        return try await signInInternal(timeoutSeconds: timeoutSeconds) { completion in
+        return try await signInInternal(timeoutSeconds: timeoutSeconds, fallbackScopes: config.scopes) { completion in
             GIDSignIn.sharedInstance.signIn(
                 withPresenting: presentingWindow,
                 hint: nil,
@@ -196,9 +345,90 @@ public final class GoogleAuthClient {
             }
         }
     }
-#endif
 
-    public func signOut() {
-        GIDSignIn.sharedInstance.signOut()
+    public func updateScopes(
+        scopes: [String],
+        mode: GoogleAuthScopeMode,
+        presentingWindow: NSWindow,
+        timeoutSeconds: TimeInterval = 60
+    ) async throws -> GoogleAuthResult {
+        guard !isSigningIn else {
+            throw GoogleAuthError.signInInProgress
+        }
+
+        guard let config else {
+            throw GoogleAuthError.configMissing
+        }
+
+        guard presentingWindow.isVisible else {
+            throw GoogleAuthError.presentationError
+        }
+
+        guard let currentUser = GIDSignIn.sharedInstance.currentUser else {
+            throw GoogleAuthError.notSignedIn
+        }
+
+        let targetScopes = normalizeScopes(scopes)
+        let currentScopes = getGrantedScopes()
+        let currentSet = Set(currentScopes)
+        let targetSet = Set(targetScopes)
+
+        let requestedScopes: [String]
+        switch mode {
+        case .add:
+            requestedScopes = targetScopes.filter { !currentSet.contains($0) }
+            if requestedScopes.isEmpty {
+                throw GoogleAuthError.noScopeChangeRequired
+            }
+
+        case .replace:
+            if targetSet == currentSet {
+                throw GoogleAuthError.noScopeChangeRequired
+            }
+
+            let hasRemovals = !currentSet.isSubset(of: targetSet)
+            if hasRemovals {
+                try await revokeAccess()
+            }
+            requestedScopes = targetScopes
+        }
+
+        isSigningIn = true
+        defer { isSigningIn = false }
+
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(
+            clientID: config.iosClientId,
+            serverClientID: config.webClientId
+        )
+
+        switch mode {
+        case .add:
+            return try await signInInternal(
+                timeoutSeconds: timeoutSeconds,
+                fallbackScopes: mergeScopes(currentScopes, requestedScopes)
+            ) { completion in
+                currentUser.addScopes(
+                    requestedScopes,
+                    presenting: presentingWindow
+                ) { result, error in
+                    completion(result, error)
+                }
+            }
+
+        case .replace:
+            return try await signInInternal(
+                timeoutSeconds: timeoutSeconds,
+                fallbackScopes: requestedScopes
+            ) { completion in
+                GIDSignIn.sharedInstance.signIn(
+                    withPresenting: presentingWindow,
+                    hint: nil,
+                    additionalScopes: requestedScopes
+                ) { result, error in
+                    completion(result, error)
+                }
+            }
+        }
     }
+#endif
 }

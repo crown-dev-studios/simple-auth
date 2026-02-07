@@ -1,5 +1,34 @@
 # Simple Auth
 
+## Quick start (build + compile)
+
+This repo uses `pnpm`.
+
+```sh
+pnpm install
+pnpm typecheck   # compile/type-check all packages
+pnpm build       # build all packages with a build script
+```
+
+Python package build (uv):
+
+```sh
+uv run --with build python -m build packages/simple-auth-server-python
+```
+
+Python package install options (`simple-auth-server`):
+
+```sh
+# pip (editable, local source)
+python -m pip install -e packages/simple-auth-server-python
+
+# uv (editable, local source)
+uv pip install -e packages/simple-auth-server-python
+
+# poetry (from package directory)
+cd packages/simple-auth-server-python && poetry install
+```
+
 Cross-platform auth building blocks:
 - Google auth-code sign-in (client gets a one-time `authCode`, server exchanges it)
 - Redis-backed OTP + session primitives (server-side)
@@ -41,9 +70,6 @@ Cross-platform auth building blocks:
 
 ## Local development
 
-This repo uses `pnpm`.
-
 ```sh
-pnpm install
-pnpm typecheck
+pnpm test:unit
 ```

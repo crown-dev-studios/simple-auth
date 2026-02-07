@@ -2,7 +2,12 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["react-native"]
+    "types": ["react-native"],
+    "baseUrl": ".",
+    "paths": {
+      "@crown-dev-studios/google-auth": ["../google-auth/src/index.ts"],
+      "@crown-dev-studios/simple-auth-shared-types": ["../shared-types/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

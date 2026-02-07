@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name         = 'CDSGoogleAuth'
-  s.version      = '0.1.3'
+  s.version      = '0.2.0'
   s.summary      = 'Google auth-code flow native module'
   s.homepage     = 'https://github.com/crown-dev-studios/simple-auth'
   s.license      = { :type => 'MIT' }

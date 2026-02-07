@@ -307,6 +307,40 @@ export const OAuthProviderSchema = z.enum(['google', 'apple'])
 export type OAuthProvider = z.infer<typeof OAuthProviderSchema>
 
 /**
+ * Scope update mode for Google auth management.
+ * - add: request only missing scopes
+ * - replace: desired scopes become authoritative (can remove)
+ */
+export const GoogleScopeModeSchema = z.enum(['add', 'replace'])
+export type GoogleScopeMode = z.infer<typeof GoogleScopeModeSchema>
+
+/**
+ * Canonical Google auth result returned by client SDKs.
+ */
+export const GoogleAuthResultSchema = z.object({
+    authCode: z.string().min(1),
+    grantedScopes: z.array(z.string()),
+})
+export type GoogleAuthResult = z.infer<typeof GoogleAuthResultSchema>
+
+/**
+ * Request payload for scope updates on client SDKs.
+ */
+export const GoogleScopeUpdateRequestSchema = z.object({
+    scopes: z.array(z.string()).default([]),
+    mode: GoogleScopeModeSchema,
+})
+export type GoogleScopeUpdateRequest = z.infer<typeof GoogleScopeUpdateRequestSchema>
+
+/**
+ * Granted scope response payload for client SDKs.
+ */
+export const GoogleGrantedScopesResponseSchema = z.object({
+    grantedScopes: z.array(z.string()),
+})
+export type GoogleGrantedScopesResponse = z.infer<typeof GoogleGrantedScopesResponseSchema>
+
+/**
  * Google OAuth request - sent from mobile after native sign-in
  * - authCode: server auth code to exchange on backend
  */
@@ -346,6 +380,7 @@ export const OAuthAuthenticatedResponseSchema = z.object({
     status: z.literal('authenticated'),
     user: AuthUserWithPhoneSchema,
     tokens: AuthTokensSchema,
+    grantedScopes: z.array(z.string()).optional(),
 })
 export type OAuthAuthenticatedResponse = z.infer<typeof OAuthAuthenticatedResponseSchema>
 

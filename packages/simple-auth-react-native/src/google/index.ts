@@ -1,4 +1,15 @@
-export { configureGoogleAuth, signInWithGoogle, signOutGoogle } from '@crown-dev-studios/google-auth'
+export {
+  configureGoogleAuth,
+  signInWithGoogle,
+  updateGoogleScopes,
+  getGoogleGrantedScopes,
+  revokeGoogleAccess,
+  signOutGoogle,
+  type GoogleAuthConfig,
+  type GoogleAuthResult,
+  type GoogleAuthScopeMode,
+  type GoogleScopeUpdateRequest,
+} from '@crown-dev-studios/google-auth'
 
 import { OAuthResponseSchema, type OAuthResponse } from '@crown-dev-studios/simple-auth-shared-types'
 

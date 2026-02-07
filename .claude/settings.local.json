@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm typecheck:*)",
+      "Bash(git stash:*)",
+      "Bash(pnpm test:unit:*)"
+    ]
+  }
+}

@@ -1,8 +1,10 @@
 [project]
 name = "simple-auth-server"
-version = "0.3.0"
+version = "0.3.1"
 description = "Server-side auth primitives (OTP, sessions, Google OAuth) with Redis"
+readme = "README.md"
 requires-python = ">=3.11"
+urls = { Homepage = "https://github.com/crown-dev-studios/simple-auth", Repository = "https://github.com/crown-dev-studios/simple-auth" }
 dependencies = [
   "httpx>=0.27.0",
   "redis>=5.0.0",

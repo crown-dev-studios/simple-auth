@@ -109,6 +109,7 @@ export const EmailOtpRequestErrorSchema = z.discriminatedUnion('error', [
 export type EmailOtpRequestError = z.infer<typeof EmailOtpRequestErrorSchema>
 
 export const EmailOtpVerifySchema = z.object({
+    sessionToken: z.string(),
     email: z.email(),
     code: z.string().length(OTP_CODE_LENGTH),
 })
@@ -138,7 +139,7 @@ export type EmailOtpVerifyResponse = z.infer<typeof EmailOtpVerifyResponseSchema
 
 export const EmailOtpVerifyErrorSchema = z.discriminatedUnion('error', [
     AuthErrorSchemas.VALIDATION_ERROR,
-    AuthErrorSchemas.OTP_EXPIRED,
+    AuthErrorSchemas.INVALID_SESSION,
     AuthErrorSchemas.INVALID_CODE,
     AuthErrorSchemas.MAX_ATTEMPTS,
     AuthErrorSchemas.VERIFICATION_FAILED,
@@ -242,7 +243,6 @@ export const PhoneOtpVerifyErrorSchema = z.discriminatedUnion('error', [
     AuthErrorSchemas.INVALID_SESSION,
     AuthErrorSchemas.EMAIL_NOT_VERIFIED,
     AuthErrorSchemas.NO_PHONE,
-    AuthErrorSchemas.OTP_EXPIRED,
     AuthErrorSchemas.INVALID_CODE,
     AuthErrorSchemas.MAX_ATTEMPTS,
     AuthErrorSchemas.VERIFICATION_FAILED,
@@ -448,7 +448,6 @@ export const OAuthLinkErrorSchema = z.discriminatedUnion('error', [
     AuthErrorSchemas.VALIDATION_ERROR,
     AuthErrorSchemas.INVALID_SESSION,
     AuthErrorSchemas.INVALID_CODE,
-    AuthErrorSchemas.OTP_EXPIRED,
     AuthErrorSchemas.MAX_ATTEMPTS,
     AuthErrorSchemas.VERIFICATION_FAILED,
     AuthErrorSchemas.ACCOUNT_INACTIVE,

@@ -5,7 +5,6 @@ export type OtpResult<T> =
 export type OtpError =
   | { code: 'RATE_LIMITED'; message: string; retryAfterSeconds: number }
   | { code: 'INVALID_CODE'; message: string; attemptsRemaining: number }
-  | { code: 'EXPIRED'; message: string }
   | { code: 'MAX_ATTEMPTS'; message: string }
   | { code: 'NOT_FOUND'; message: string }
 
@@ -24,4 +23,3 @@ export interface OtpServiceOptions {
     rateLimit?: string
   }
 }
-

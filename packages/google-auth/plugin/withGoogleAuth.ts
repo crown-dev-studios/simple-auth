@@ -22,6 +22,10 @@ export const withGoogleAuth: ConfigPlugin<GoogleAuthPluginProps> = (config, prop
     const webClientId = props.webClientId
 
     if (!iosClientId || !webClientId) {
+        console.warn(
+            '[@crown-dev-studios/google-auth] Plugin requires both iosClientId and webClientId. ' +
+            'Google Sign-In native config was not applied.'
+        )
         return config
     }
 

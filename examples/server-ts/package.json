@@ -1,0 +1,12 @@
+{
+  "name": "simple-auth-example-server-ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "jose": "^5.0.0"
+  }
+}

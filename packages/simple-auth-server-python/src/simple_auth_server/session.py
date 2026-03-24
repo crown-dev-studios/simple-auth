@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Optional, TypedDict
+from typing import Any, Callable, Optional, TypedDict
 
 from .redis_client import RedisLike
 
@@ -14,6 +14,7 @@ _SESSION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class AuthSession(TypedDict):
+    """Session stored in Redis. May include optional pendingOAuth, existingUserId."""
     email: str
     emailVerified: bool
     phoneNumber: Optional[str]
@@ -80,6 +81,35 @@ class AuthSessionService:
             return None
 
         return parsed
+
+    async def update_session(
+        self, session_id: str, updater: Callable[[dict[str, Any]], dict[str, Any]]
+    ) -> bool:
+        """Update session in place. Returns False if session not found or invalid."""
+        normalized = _normalize_session_id(session_id)
+        if not _is_valid_session_id(normalized):
+            return False
+
+        key = f"{self._key_prefix}{normalized}"
+        raw = await self._redis.get(key)
+        if raw is None:
+            return False
+        try:
+            current: dict[str, Any] = json.loads(raw)
+        except Exception:
+            await self._redis.delete(key)
+            return False
+
+        if int(time.time() * 1000) > int(current.get("expiresAt", 0)):
+            await self._redis.delete(key)
+            return False
+
+        updated = updater(current)
+        ttl = await self._redis.ttl(key)
+        if ttl <= 0:
+            ttl = self._ttl_seconds
+        await self._redis.setex(key, ttl, json.dumps(updated))
+        return True
 
     async def delete_session(self, session_id: str) -> None:
         normalized = _normalize_session_id(session_id)

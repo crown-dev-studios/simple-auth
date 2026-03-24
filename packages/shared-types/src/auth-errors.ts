@@ -37,10 +37,6 @@ export const AuthErrorSchemas = {
     }),
 
     // OTP errors
-    OTP_EXPIRED: makeError('OTP_EXPIRED', {
-        message: z.string(),
-    }),
-
     INVALID_CODE: makeError('INVALID_CODE', {
         message: z.string(),
         attemptsRemaining: z.number().optional(),

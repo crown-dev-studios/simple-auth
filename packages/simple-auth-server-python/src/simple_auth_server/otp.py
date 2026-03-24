@@ -15,7 +15,7 @@ OtpType = Literal["email", "phone"]
 
 
 class OtpError(TypedDict):
-    code: Literal["RATE_LIMITED", "INVALID_CODE", "EXPIRED", "MAX_ATTEMPTS", "NOT_FOUND"]
+    code: Literal["RATE_LIMITED", "INVALID_CODE", "MAX_ATTEMPTS", "NOT_FOUND"]
     message: str
     retry_after_seconds: Optional[int]
     attempts_remaining: Optional[int]

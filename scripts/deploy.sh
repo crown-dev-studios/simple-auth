@@ -249,12 +249,12 @@ build_packages() {
     log_step "Building packages"
 
     if [[ "$dry_run" == true ]]; then
-        log_warn "[DRY RUN] Would run: pnpm install && pnpm build"
+        log_warn "[DRY RUN] Would run: pnpm install --frozen-lockfile && pnpm build"
         return
     fi
 
     cd "$ROOT_DIR"
-    pnpm install
+    pnpm install --frozen-lockfile
     pnpm build
     log_info "All packages built successfully"
 }

@@ -154,6 +154,17 @@ update_podspec() {
     fi
 }
 
+# Refresh workspace lockfile so version bumps and lock metadata land together.
+update_lockfile() {
+    echo ""
+    echo -e "${YELLOW}Refreshing pnpm lockfile...${NC}"
+    (
+        cd "$ROOT_DIR"
+        pnpm install --lockfile-only
+    )
+    echo -e "${GREEN}✓${NC} Updated pnpm-lock.yaml"
+}
+
 # Main script
 main() {
     local CREATE_TAG=true
@@ -225,6 +236,9 @@ main() {
 
     # iOS podspec
     update_podspec "$ROOT_DIR/packages/google-auth/CDSGoogleAuth.podspec" "$NEW_VERSION"
+
+    # Keep the workspace lockfile in sync with updated package versions.
+    update_lockfile
 
     echo ""
     echo -e "${GREEN}All versions updated to $NEW_VERSION${NC}"

@@ -1,6 +1,6 @@
 [project]
 name = "simple-auth-server"
-version = "0.3.1"
+version = "0.3.2"
 description = "Server-side auth primitives (OTP, sessions, Google OAuth) with Redis"
 readme = "README.md"
 requires-python = ">=3.11"

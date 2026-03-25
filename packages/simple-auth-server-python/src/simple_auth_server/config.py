@@ -34,10 +34,18 @@ class SimpleAuthProvidersConfig:
     phone_otp_enabled: bool = True
     google_enabled: bool = False
 
+
 @dataclass(frozen=True)
 class SignInPolicyConfig:
     allowed_email_domains: Optional[list[str]] = None
 
+
+@dataclass(frozen=True)
+class SiteWallConfig:
+    password: str
+    secret: str
+    token_ttl_seconds: int = 2_592_000  # 30 days
+    cookie_name: str = "site_wall"
 
 
 @dataclass(frozen=True)
@@ -47,3 +55,4 @@ class SimpleAuthServerConfig:
     otp: OtpConfig = OtpConfig()
     providers: SimpleAuthProvidersConfig = SimpleAuthProvidersConfig()
     sign_in_policy: Optional[SignInPolicyConfig] = None
+    site_wall: Optional[SiteWallConfig] = None

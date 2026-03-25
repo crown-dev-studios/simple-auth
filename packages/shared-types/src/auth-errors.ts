@@ -104,6 +104,15 @@ export const AuthErrorSchemas = {
         allowedDomains: z.array(z.string()),
     }),
 
+    // Site wall errors
+    INVALID_PASSWORD: makeError('INVALID_PASSWORD', {
+        message: z.string(),
+    }),
+
+    INVALID_ACCESS_TOKEN: makeError('INVALID_ACCESS_TOKEN', {
+        message: z.string(),
+    }),
+
     // OAuth errors
     OAUTH_TOKEN_INVALID: makeError('OAUTH_TOKEN_INVALID', {
         message: z.string(),

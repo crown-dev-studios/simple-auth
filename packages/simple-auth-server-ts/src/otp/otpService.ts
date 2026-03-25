@@ -73,8 +73,37 @@ export class OtpService {
     private readonly options: OtpServiceOptions
   ) {}
 
+  checkEmailDomain(email: string): OtpResult<{ domain: string }> {
+    const domain = normalizeEmail(email).split('@').pop() ?? ''
+    const allowedDomains = this.options.allowedDomains
+
+    if (!allowedDomains || allowedDomains.length === 0) {
+      return { success: true, data: { domain } }
+    }
+
+    const normalizedAllowed = allowedDomains.map(d => d.toLowerCase().trim())
+
+    if (!normalizedAllowed.includes(domain)) {
+      return {
+        success: false,
+        error: {
+          code: 'DOMAIN_NOT_ALLOWED',
+          message: `Email domain "${domain}" is not allowed.`,
+          domain,
+          allowedDomains: normalizedAllowed,
+        },
+      }
+    }
+
+    return { success: true, data: { domain } }
+  }
+
   async generateEmailOtp(email: string): Promise<OtpResult<string>> {
     const normalized = normalizeEmail(email)
+
+    const domainCheck = this.checkEmailDomain(normalized)
+    if (!domainCheck.success) return domainCheck
+
     return this.generateOtp('email', normalized)
   }
 

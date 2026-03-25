@@ -62,3 +62,64 @@ test('OtpService treats corrupted JSON as not found and deletes key', async () =
   assert.equal(result.error.code, 'NOT_FOUND')
   assert.equal(await redis.get(key), null)
 })
+
+// --- Domain locking ---
+
+test('checkEmailDomain allows email when domain is in allowedDomains', () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test', allowedDomains: ['crown.dev', 'example.com'] })
+
+  const result = service.checkEmailDomain('user@crown.dev')
+  assert.equal(result.success, true)
+  if (result.success) assert.equal(result.data.domain, 'crown.dev')
+})
+
+test('checkEmailDomain rejects email when domain is not in allowedDomains', () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test', allowedDomains: ['crown.dev'] })
+
+  const result = service.checkEmailDomain('user@gmail.com')
+  assert.equal(result.success, false)
+  if (!result.success) {
+    assert.equal(result.error.code, 'DOMAIN_NOT_ALLOWED')
+    assert.equal(result.error.domain, 'gmail.com')
+    assert.deepEqual(result.error.allowedDomains, ['crown.dev'])
+  }
+})
+
+test('checkEmailDomain is case-insensitive', () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test', allowedDomains: ['Crown.Dev'] })
+
+  const result = service.checkEmailDomain('User@CROWN.DEV')
+  assert.equal(result.success, true)
+})
+
+test('checkEmailDomain allows all domains when allowedDomains is not configured', () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test' })
+
+  const result = service.checkEmailDomain('user@anything.com')
+  assert.equal(result.success, true)
+})
+
+test('generateEmailOtp rejects disallowed domain before generating code', async () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test', allowedDomains: ['crown.dev'] })
+
+  const result = await service.generateEmailOtp('user@gmail.com')
+  assert.equal(result.success, false)
+  if (!result.success) assert.equal(result.error.code, 'DOMAIN_NOT_ALLOWED')
+
+  // No OTP key should have been created
+  const key = 'otp:email:user@gmail.com'
+  assert.equal(await redis.get(key), null)
+})
+
+test('generateEmailOtp allows email with permitted domain', async () => {
+  const redis = new FakeRedis()
+  const service = new OtpService(redis, { env: 'test', allowedDomains: ['crown.dev'], bypassCode: '111111' })
+
+  const result = await service.generateEmailOtp('user@crown.dev')
+  assert.equal(result.success, true)
+})

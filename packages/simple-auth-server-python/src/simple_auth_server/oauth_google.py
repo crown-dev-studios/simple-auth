@@ -11,6 +11,7 @@ class GoogleOAuthConfig:
     client_id: str
     client_secret: str
     redirect_uri: Optional[str] = None
+    allowed_email_domains: Optional[list[str]] = None
 
 
 @dataclass(frozen=True)
@@ -23,10 +24,18 @@ class GoogleOAuthUserInfo:
     raw: dict[str, Any]
 
 
+class GoogleOAuthDomainNotAllowedError(ValueError):
+    def __init__(self, domain: str, allowed_domains: list[str]) -> None:
+        super().__init__(f'Email domain "{domain}" is not allowed.')
+        self.domain = domain
+        self.allowed_domains = allowed_domains
+
+
 class GoogleOAuthService:
     def __init__(self, config: GoogleOAuthConfig, http_client: Optional[httpx.AsyncClient] = None) -> None:
         self._config = config
         self._http = http_client or httpx.AsyncClient(timeout=10.0)
+        self._allowed_email_domains = self._normalize_domains(config.allowed_email_domains or [])
 
     async def exchange_auth_code(self, auth_code: str, required_scopes: Optional[list[str]] = None) -> dict[str, Any]:
         token_payload = {
@@ -62,6 +71,8 @@ class GoogleOAuthService:
         )
         userinfo_resp.raise_for_status()
         user = userinfo_resp.json()
+
+        self._validate_email_domain(user.get("email"))
 
         return {
             "user": {
@@ -110,3 +121,15 @@ class GoogleOAuthService:
             normalized.append(trimmed)
 
         return normalized
+
+    def _normalize_domains(self, domains: list[str]) -> list[str]:
+        return self._normalize_scopes([domain.lower() for domain in domains])
+
+    def _validate_email_domain(self, email: Any) -> None:
+        if not self._allowed_email_domains:
+            return
+
+        normalized_email = email.strip().lower() if isinstance(email, str) else ""
+        domain = normalized_email.rsplit("@", 1)[-1] if normalized_email else ""
+        if domain not in self._allowed_email_domains:
+            raise GoogleOAuthDomainNotAllowedError(domain, self._allowed_email_domains)

@@ -6,17 +6,24 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from simple_auth_server.oauth_google import GoogleOAuthConfig, GoogleOAuthService
+from simple_auth_server.oauth_google import (
+    GoogleOAuthConfig,
+    GoogleOAuthDomainNotAllowedError,
+    GoogleOAuthService,
+)
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def create_service(handler: httpx.MockTransport) -> tuple[GoogleOAuthService, httpx.AsyncClient]:
+def create_service(
+    handler: httpx.MockTransport,
+    config: GoogleOAuthConfig | None = None,
+) -> tuple[GoogleOAuthService, httpx.AsyncClient]:
     client = httpx.AsyncClient(transport=handler)
     service = GoogleOAuthService(
-        GoogleOAuthConfig(client_id="web-client", client_secret="secret", redirect_uri="myapp://oauth"),
+        config or GoogleOAuthConfig(client_id="web-client", client_secret="secret", redirect_uri="myapp://oauth"),
         http_client=client,
     )
     return service, client
@@ -104,6 +111,88 @@ def test_exchange_auth_code_raises_when_required_scope_missing() -> None:
             run(service.exchange_auth_code("auth-code", required_scopes=["email", "https://www.googleapis.com/auth/drive.file"]))
     finally:
         run(client.aclose())
+
+
+def test_exchange_auth_code_rejects_disallowed_email_domains() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "access",
+                    "id_token": "id",
+                    "scope": "openid email profile",
+                },
+            )
+
+        if request.url.path == "/oauth2/v3/userinfo":
+            return httpx.Response(
+                200,
+                json={
+                    "sub": "google-sub",
+                    "email": "person@gmail.com",
+                },
+            )
+
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    service, client = create_service(
+        httpx.MockTransport(handler),
+        config=GoogleOAuthConfig(
+            client_id="web-client",
+            client_secret="secret",
+            redirect_uri="myapp://oauth",
+            allowed_email_domains=["crown.dev"],
+        ),
+    )
+    try:
+        with pytest.raises(GoogleOAuthDomainNotAllowedError) as exc_info:
+            run(service.exchange_auth_code("auth-code"))
+    finally:
+        run(client.aclose())
+
+    assert exc_info.value.domain == "gmail.com"
+    assert exc_info.value.allowed_domains == ["crown.dev"]
+
+
+def test_exchange_auth_code_allows_configured_domains_case_insensitively() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "access",
+                    "id_token": "id",
+                    "scope": "openid email profile",
+                },
+            )
+
+        if request.url.path == "/oauth2/v3/userinfo":
+            return httpx.Response(
+                200,
+                json={
+                    "sub": "google-sub",
+                    "email": "Person@CROWN.DEV",
+                },
+            )
+
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    service, client = create_service(
+        httpx.MockTransport(handler),
+        config=GoogleOAuthConfig(
+            client_id="web-client",
+            client_secret="secret",
+            redirect_uri="myapp://oauth",
+            allowed_email_domains=["Crown.Dev"],
+        ),
+    )
+    try:
+        result = run(service.exchange_auth_code("auth-code"))
+    finally:
+        run(client.aclose())
+
+    assert result["user"]["email"] == "Person@CROWN.DEV"
 
 
 def test_revoke_token_posts_to_google_revoke_endpoint() -> None:

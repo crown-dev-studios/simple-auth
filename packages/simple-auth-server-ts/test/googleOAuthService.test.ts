@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { gaxios } from 'google-auth-library'
-import { GoogleOAuthMissingScopesError, GoogleOAuthService } from '../src/oauth/google/googleOAuthService'
+import {
+  GoogleOAuthDomainNotAllowedError,
+  GoogleOAuthMissingScopesError,
+  GoogleOAuthService,
+} from '../src/oauth/google/googleOAuthService'
 
 type StubGoogleClient = {
   getToken: (options: unknown) => Promise<{ tokens: Record<string, unknown> }>
@@ -80,6 +84,66 @@ test('GoogleOAuthService.exchangeAuthCode returns missing scope error when requi
   const missing = result.error as GoogleOAuthMissingScopesError
   assert.deepEqual(missing.missingScopes, ['https://www.googleapis.com/auth/drive.file'])
   assert.deepEqual(missing.grantedScopes, ['openid', 'email'])
+})
+
+test('GoogleOAuthService.exchangeAuthCode rejects disallowed email domains', async () => {
+  const service = new GoogleOAuthService({
+    clientId: 'web-client',
+    clientSecret: 'secret',
+    allowedEmailDomains: ['crown.dev'],
+  })
+
+  setClient(service, {
+    getToken: async () => ({
+      tokens: {
+        id_token: 'id-token',
+        scope: 'openid email profile',
+      },
+    }),
+    verifyIdToken: async () => ({
+      getPayload: () => ({
+        sub: 'google-sub',
+        email: 'person@gmail.com',
+      }),
+    }),
+    revokeToken: async () => undefined,
+  })
+
+  const result = await service.exchangeAuthCode('auth-code')
+  assert.equal(result.success, false)
+  if (result.success) return
+
+  assert.ok(result.error instanceof GoogleOAuthDomainNotAllowedError)
+  const domainError = result.error as GoogleOAuthDomainNotAllowedError
+  assert.equal(domainError.domain, 'gmail.com')
+  assert.deepEqual(domainError.allowedDomains, ['crown.dev'])
+})
+
+test('GoogleOAuthService.exchangeAuthCode allows configured domains case-insensitively', async () => {
+  const service = new GoogleOAuthService({
+    clientId: 'web-client',
+    clientSecret: 'secret',
+    allowedEmailDomains: ['Crown.Dev'],
+  })
+
+  setClient(service, {
+    getToken: async () => ({
+      tokens: {
+        id_token: 'id-token',
+        scope: 'openid email profile',
+      },
+    }),
+    verifyIdToken: async () => ({
+      getPayload: () => ({
+        sub: 'google-sub',
+        email: 'Person@CROWN.DEV',
+      }),
+    }),
+    revokeToken: async () => undefined,
+  })
+
+  const result = await service.exchangeAuthCode('auth-code')
+  assert.equal(result.success, true)
 })
 
 test('GoogleOAuthService.revokeToken returns success for valid token', async () => {

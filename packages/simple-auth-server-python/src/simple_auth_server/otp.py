@@ -15,7 +15,7 @@ OtpType = Literal["email", "phone"]
 
 
 class OtpError(TypedDict):
-    code: Literal["RATE_LIMITED", "INVALID_CODE", "MAX_ATTEMPTS", "NOT_FOUND"]
+    code: Literal["RATE_LIMITED", "INVALID_CODE", "MAX_ATTEMPTS", "NOT_FOUND", "DOMAIN_NOT_ALLOWED"]
     message: str
     retry_after_seconds: Optional[int]
     attempts_remaining: Optional[int]
@@ -67,13 +67,43 @@ async def _check_rate_limit(
 
 
 class OtpService:
-    def __init__(self, redis: RedisLike, env: Env, config: OtpConfig = OtpConfig()) -> None:
+    def __init__(
+        self,
+        redis: RedisLike,
+        env: Env,
+        config: OtpConfig = OtpConfig(),
+        allowed_domains: Optional[list[str]] = None,
+    ) -> None:
         self._redis = redis
         self._env = env
         self._config = config
+        self._allowed_domains = allowed_domains
+
+    def check_email_domain(self, email: str) -> tuple[bool, Optional[OtpError]]:
+        domain = _normalize_email(email).rsplit("@", 1)[-1]
+
+        if not self._allowed_domains:
+            return True, None
+
+        normalized_allowed = [d.lower().strip() for d in self._allowed_domains]
+        if domain not in normalized_allowed:
+            return False, {
+                "code": "DOMAIN_NOT_ALLOWED",
+                "message": f'Email domain "{domain}" is not allowed.',
+                "retry_after_seconds": None,
+                "attempts_remaining": None,
+            }
+
+        return True, None
 
     async def generate_email_otp(self, email: str) -> tuple[bool, str | OtpError]:
-        return await self._generate("email", _normalize_email(email))
+        normalized = _normalize_email(email)
+
+        ok, err = self.check_email_domain(normalized)
+        if not ok:
+            return False, err  # type: ignore[return-value]
+
+        return await self._generate("email", normalized)
 
     async def verify_email_otp(self, email: str, code: str) -> tuple[bool, None | OtpError]:
         return await self._verify("email", _normalize_email(email), code)

@@ -7,10 +7,12 @@ export type OtpError =
   | { code: 'INVALID_CODE'; message: string; attemptsRemaining: number }
   | { code: 'MAX_ATTEMPTS'; message: string }
   | { code: 'NOT_FOUND'; message: string }
+  | { code: 'DOMAIN_NOT_ALLOWED'; message: string; domain: string; allowedDomains: string[] }
 
 export interface OtpServiceOptions {
   env: 'production' | 'development' | 'test'
   bypassCode?: string
+  allowedDomains?: string[]
   ttlSeconds?: number
   maxAttempts?: number
   rateLimit?: {

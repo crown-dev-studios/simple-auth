@@ -20,12 +20,26 @@ import {
   createRedisClientFromConfig,
   OtpService,
   AuthSessionService,
+  GoogleOAuthDomainNotAllowedError,
   GoogleOAuthService,
 } from '../../packages/simple-auth-server-ts/src'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
+
+const parseAllowedEmailDomains = (value: string | undefined): string[] | undefined => {
+  if (!value) {
+    return undefined
+  }
+
+  const domains = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+
+  return domains.length > 0 ? domains : undefined
+}
 
 const config = SimpleAuthServerConfigSchema.parse({
   env: process.env.APP_ENV ?? 'development',
@@ -47,6 +61,9 @@ const config = SimpleAuthServerConfigSchema.parse({
         }
       : undefined,
   },
+  signInPolicy: {
+    allowedEmailDomains: parseAllowedEmailDomains(process.env.ALLOWED_EMAIL_DOMAINS),
+  },
 })
 
 // Log bypass warning in non-production
@@ -61,9 +78,11 @@ if (config.env !== 'production' && config.otp?.bypassCode) {
 // ---------------------------------------------------------------------------
 
 const redis = createRedisClientFromConfig(config)
+const allowedEmailDomains = config.signInPolicy?.allowedEmailDomains
 const otpService = new OtpService(redis, {
   env: config.env,
   bypassCode: config.otp?.bypassCode,
+  allowedDomains: allowedEmailDomains,
 })
 const sessionService = new AuthSessionService(redis)
 const googleOAuth = config.providers.google?.enabled
@@ -71,6 +90,7 @@ const googleOAuth = config.providers.google?.enabled
       clientId: config.providers.google.clientId,
       clientSecret: config.providers.google.clientSecret,
       redirectUri: config.providers.google.redirectUri,
+      allowedEmailDomains,
     })
   : undefined
 
@@ -283,6 +303,17 @@ app.post('/auth/oauth/google', async (c) => {
 
   const result = await googleOAuth.exchangeAuthCode(body.authCode)
   if (!result.success) {
+    if (result.error instanceof GoogleOAuthDomainNotAllowedError) {
+      return c.json(
+        {
+          error: 'DOMAIN_NOT_ALLOWED',
+          message: result.error.message,
+          domain: result.error.domain,
+          allowedDomains: result.error.allowedDomains,
+        },
+        400
+      )
+    }
     return c.json({ error: 'OAUTH_TOKEN_INVALID', message: result.error.message }, 400)
   }
 

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { AuthErrorSchemas } from './auth-errors'
+import { AuthErrorSchemas } from './auth-errors.js'
 
 // ============================================
 // Common Auth Schemas
@@ -434,6 +434,7 @@ export const OAuthErrorSchema = z.discriminatedUnion('error', [
     AuthErrorSchemas.VALIDATION_ERROR,
     AuthErrorSchemas.OAUTH_TOKEN_INVALID,
     AuthErrorSchemas.OAUTH_EMAIL_REQUIRED,
+    AuthErrorSchemas.DOMAIN_NOT_ALLOWED,
     AuthErrorSchemas.RATE_LIMITED,
     AuthErrorSchemas.ACCOUNT_INACTIVE,
     AuthErrorSchemas.NOT_IMPLEMENTED,

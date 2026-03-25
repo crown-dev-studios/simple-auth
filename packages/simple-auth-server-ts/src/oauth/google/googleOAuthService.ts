@@ -5,6 +5,7 @@ export interface GoogleOAuthConfig {
   clientId: string
   clientSecret: string
   redirectUri?: string
+  allowedEmailDomains?: string[]
 }
 
 export interface ExchangeAuthCodeOptions {
@@ -78,13 +79,27 @@ export class GoogleOAuthMissingScopesError extends Error {
   }
 }
 
+export class GoogleOAuthDomainNotAllowedError extends Error {
+  readonly domain: string
+  readonly allowedDomains: string[]
+
+  constructor(domain: string, allowedDomains: string[]) {
+    super(`Email domain "${domain}" is not allowed.`)
+    this.name = 'GoogleOAuthDomainNotAllowedError'
+    this.domain = domain
+    this.allowedDomains = allowedDomains
+  }
+}
+
 export class GoogleOAuthService {
   private readonly client: OAuth2Client
   private readonly redirectUri?: string
+  private readonly allowedEmailDomains: string[]
 
   constructor(private readonly config: GoogleOAuthConfig) {
     this.client = new OAuth2Client(config.clientId, config.clientSecret, config.redirectUri)
     this.redirectUri = config.redirectUri
+    this.allowedEmailDomains = this.normalizeDomains(config.allowedEmailDomains ?? [])
   }
 
   async exchangeAuthCode(authCode: string, options: ExchangeAuthCodeOptions = {}): Promise<GoogleOAuthExchangeResult> {
@@ -121,6 +136,11 @@ export class GoogleOAuthService {
             error: new GoogleOAuthMissingScopesError(missingScopes, grantedScopes),
           }
         }
+      }
+
+      const domainError = this.validateEmailDomain(payload.email)
+      if (domainError) {
+        return { success: false, error: domainError }
       }
 
       return {
@@ -232,6 +252,23 @@ export class GoogleOAuthService {
     }
 
     return normalized
+  }
+
+  private normalizeDomains(domains: string[]): string[] {
+    return this.normalizeScopes(domains.map((domain) => domain.toLowerCase()))
+  }
+
+  private validateEmailDomain(email: string): GoogleOAuthDomainNotAllowedError | null {
+    if (this.allowedEmailDomains.length === 0) {
+      return null
+    }
+
+    const domain = email.toLowerCase().trim().split('@').pop() ?? ''
+    if (!this.allowedEmailDomains.includes(domain)) {
+      return new GoogleOAuthDomainNotAllowedError(domain, this.allowedEmailDomains)
+    }
+
+    return null
   }
 
   private parseResponseData(data: unknown): unknown {

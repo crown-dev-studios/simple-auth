@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { CommonErrorSchemas, makeError } from './common-errors'
+import { CommonErrorSchemas, makeError } from './common-errors.js'
 
 /**
  * Central registry of all auth-specific error schemas.
@@ -95,6 +95,13 @@ export const AuthErrorSchemas = {
 
     NOT_IMPLEMENTED: makeError('NOT_IMPLEMENTED', {
         message: z.string(),
+    }),
+
+    // Domain lock errors
+    DOMAIN_NOT_ALLOWED: makeError('DOMAIN_NOT_ALLOWED', {
+        message: z.string(),
+        domain: z.string(),
+        allowedDomains: z.array(z.string()),
     }),
 
     // OAuth errors

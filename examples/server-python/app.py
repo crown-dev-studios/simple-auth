@@ -28,7 +28,11 @@ from simple_auth_server.redis_client import create_redis_client
 from simple_auth_server.otp import OtpService
 from simple_auth_server.config import OtpConfig
 from simple_auth_server.session import AuthSessionService
-from simple_auth_server.oauth_google import GoogleOAuthService, GoogleOAuthConfig
+from simple_auth_server.oauth_google import (
+    GoogleOAuthConfig,
+    GoogleOAuthDomainNotAllowedError,
+    GoogleOAuthService,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -40,6 +44,15 @@ BYPASS_CODE = os.environ.get("AUTH_BYPASS_CODE")
 JWT_SECRET = os.environ.get("JWT_SECRET")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+ALLOWED_EMAIL_DOMAINS = os.environ.get("ALLOWED_EMAIL_DOMAINS")
+
+
+def parse_allowed_email_domains(value: Optional[str]) -> Optional[list[str]]:
+    if not value:
+        return None
+
+    domains = [entry.strip() for entry in value.split(",") if entry.strip()]
+    return domains or None
 
 if not JWT_SECRET or len(JWT_SECRET) < 32:
     print(
@@ -58,11 +71,13 @@ app = FastAPI()
 # ---------------------------------------------------------------------------
 
 redis = create_redis_client(REDIS_URL)
+allowed_email_domains = parse_allowed_email_domains(ALLOWED_EMAIL_DOMAINS)
 
 otp_service = OtpService(
     redis=redis,
     env="production" if APP_ENV == "production" else "development",
     config=OtpConfig(bypass_code=BYPASS_CODE),
+    allowed_domains=allowed_email_domains,
 )
 
 session_service = AuthSessionService(redis=redis)
@@ -70,7 +85,11 @@ session_service = AuthSessionService(redis=redis)
 google_oauth: Optional[GoogleOAuthService] = None
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
     google_oauth = GoogleOAuthService(
-        GoogleOAuthConfig(client_id=GOOGLE_CLIENT_ID, client_secret=GOOGLE_CLIENT_SECRET)
+        GoogleOAuthConfig(
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            allowed_email_domains=allowed_email_domains,
+        )
     )
 
 is_production = APP_ENV == "production"
@@ -286,6 +305,16 @@ async def oauth_google(body: GoogleOAuthRequest):
 
     try:
         result = await google_oauth.exchange_auth_code(body.authCode)
+    except GoogleOAuthDomainNotAllowedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "DOMAIN_NOT_ALLOWED",
+                "message": str(exc),
+                "domain": exc.domain,
+                "allowedDomains": exc.allowed_domains,
+            },
+        )
     except Exception:
         raise HTTPException(status_code=400, detail={"error": "OAUTH_TOKEN_INVALID", "message": "Failed to exchange auth code"})
 

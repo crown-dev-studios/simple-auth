@@ -34,6 +34,11 @@ class SimpleAuthProvidersConfig:
     phone_otp_enabled: bool = True
     google_enabled: bool = False
 
+@dataclass(frozen=True)
+class SignInPolicyConfig:
+    allowed_email_domains: Optional[list[str]] = None
+
+
 
 @dataclass(frozen=True)
 class SimpleAuthServerConfig:
@@ -41,3 +46,4 @@ class SimpleAuthServerConfig:
     redis: RedisConfig = RedisConfig()
     otp: OtpConfig = OtpConfig()
     providers: SimpleAuthProvidersConfig = SimpleAuthProvidersConfig()
+    sign_in_policy: Optional[SignInPolicyConfig] = None

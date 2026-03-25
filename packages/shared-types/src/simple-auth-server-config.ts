@@ -43,6 +43,14 @@ export const SimpleAuthProvidersConfigSchema = z
     .strict()
 
 export type SimpleAuthProvidersConfig = z.infer<typeof SimpleAuthProvidersConfigSchema>
+export const SimpleAuthSignInPolicySchema = z
+    .object({
+        allowedEmailDomains: z.array(z.string().min(1)).min(1).optional(),
+    })
+    .strict()
+
+export type SimpleAuthSignInPolicy = z.infer<typeof SimpleAuthSignInPolicySchema>
+
 
 export const SimpleAuthServerConfigSchema = z
     .object({
@@ -72,6 +80,8 @@ export const SimpleAuthServerConfigSchema = z
             .optional(),
 
         providers: SimpleAuthProvidersConfigSchema,
+
+        signInPolicy: SimpleAuthSignInPolicySchema.optional(),
     })
     .strict()
 

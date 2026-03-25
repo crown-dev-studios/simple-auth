@@ -19,6 +19,10 @@ This repo exposes the `SimpleAuthNative` library product from the root
 
 Add this repository as a Swift Package dependency and link `SimpleAuthNative`.
 
+Platform requirement:
+
+- iOS 18.0+
+
 ## Quick Start
 
 ```swift
@@ -96,4 +100,3 @@ Useful methods:
 - This package does not own your user model or session model.
 - Refresh failures clear stored tokens.
 - The API client assumes your backend matches the Simple Auth JSON contracts.
-

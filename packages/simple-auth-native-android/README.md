@@ -37,9 +37,16 @@ Requirements:
 ## Quick Start
 
 ```kotlin
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+
 val tokenStore = EncryptedSharedPreferencesTokenStore(applicationContext)
 val apiClient = SimpleAuthApiClient(baseUrl = "https://api.example.com")
 val tokenManager = TokenManager(store = tokenStore, api = apiClient)
+
+lifecycleScope.launch {
+    val token = tokenManager.getAccessToken()
+}
 ```
 
 ## Main Components
@@ -83,8 +90,13 @@ Useful methods:
 Example:
 
 ```kotlin
-val token = tokenManager.getAccessToken()
+lifecycleScope.launch {
+    val token = tokenManager.getAccessToken()
+}
 ```
+
+`getAccessToken()`, `setTokens(...)`, `setTokensFromResponse(...)`, `clearTokens()`,
+and `refreshTokens()` are suspend APIs and must be called from a coroutine.
 
 ## OAuth Response Shapes
 
@@ -109,4 +121,3 @@ onboarding flow with the returned `sessionToken`.
 - Invalid refresh tokens are cleared from storage.
 - Refresh requests are deduplicated across concurrent callers.
 - This module assumes your backend follows the Simple Auth JSON response contracts.
-

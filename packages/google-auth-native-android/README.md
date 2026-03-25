@@ -37,6 +37,9 @@ Requirements:
 ## Quick Start
 
 ```kotlin
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+
 val googleAuthClient = GoogleAuthClient(applicationContext)
 
 googleAuthClient.configure(
@@ -45,25 +48,29 @@ googleAuthClient.configure(
         scopes = listOf("openid", "email", "profile"),
     )
 )
-```
 
-Start sign-in:
-
-```kotlin
-when (val step = googleAuthClient.beginSignIn(activity)) {
-    is GoogleAuthSignInStep.Completed -> {
-        val authCode = step.result.authCode
-    }
-    is GoogleAuthSignInStep.RequiresResolution -> {
-        launcher.launch(step.intentSenderRequest)
+lifecycleScope.launch {
+    when (val step = googleAuthClient.beginSignIn(activity)) {
+        is GoogleAuthSignInStep.Completed -> {
+            val authCode = step.result.authCode
+        }
+        is GoogleAuthSignInStep.RequiresResolution -> {
+            launcher.launch(step.intentSenderRequest)
+        }
     }
 }
 ```
 
+`beginSignIn(...)`, `updateScopes(...)`, `completeSignIn(...)`, `revokeAccess()`,
+and `signOut()` are suspend APIs and must be called from a coroutine.
+
 Complete sign-in from your Activity Result callback:
 
 ```kotlin
-val result = googleAuthClient.completeSignIn(resultCode, data)
+lifecycleScope.launch {
+    val result = googleAuthClient.completeSignIn(resultCode, data)
+    val authCode = result.authCode
+}
 ```
 
 ## Main API
@@ -79,11 +86,13 @@ val result = googleAuthClient.completeSignIn(resultCode, data)
 ## Scope Management
 
 ```kotlin
-googleAuthClient.updateScopes(
-    activity = activity,
-    scopes = listOf("https://www.googleapis.com/auth/calendar.readonly"),
-    mode = GoogleAuthScopeMode.ADD,
-)
+lifecycleScope.launch {
+    googleAuthClient.updateScopes(
+        activity = activity,
+        scopes = listOf("https://www.googleapis.com/auth/calendar.readonly"),
+        mode = GoogleAuthScopeMode.ADD,
+    )
+}
 ```
 
 Other helpers:
@@ -112,4 +121,3 @@ Other helpers:
 2. Start sign-in with `beginSignIn(activity)`.
 3. Handle any required resolution UI.
 4. Send the resulting `authCode` to your backend for exchange.
-

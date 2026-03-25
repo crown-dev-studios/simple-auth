@@ -17,6 +17,10 @@ In Xcode, add this repository as a Swift Package dependency and link the
 If you declare dependencies in `Package.swift`, point to the repository that
 contains this package and depend on the `GoogleAuthNative` product.
 
+Platform requirement:
+
+- iOS 18.0+
+
 ## Quick Start
 
 ```swift

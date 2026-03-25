@@ -4,6 +4,8 @@ Cross-platform auth building blocks:
 - Google auth-code sign-in (client gets a one-time `authCode`, server exchanges it)
 - Redis-backed OTP + session primitives (server-side)
 - Token storage + refresh helpers for mobile clients
+- Site wall for password-gating prototypes (stateless, no Redis)
+- Domain-locked sign-in (restrict enabled auth methods to allowed email domains)
 
 ## Packages
 

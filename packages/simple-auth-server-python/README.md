@@ -10,6 +10,8 @@ application.
 - FastAPI or other async Python backends
 - OTP onboarding flows backed by Redis
 - Google auth-code exchange handled on the server
+- Password-gating prototypes and previews (site wall)
+- Domain-locked sign-in (restrict enabled auth methods to specific email domains)
 
 ## Install
 
@@ -38,6 +40,7 @@ session_service = AuthSessionService(redis=redis)
 google_oauth = GoogleOAuthService(GoogleOAuthConfig(
     client_id="your-client-id",
     client_secret="your-client-secret",
+    allowed_email_domains=["crown.dev"],  # optional — use the same allowlist as OTP
 ))
 ```
 
@@ -75,6 +78,21 @@ Verification errors use these codes:
 - `INVALID_CODE`
 - `MAX_ATTEMPTS`
 - `NOT_FOUND`
+- `DOMAIN_NOT_ALLOWED` (when `allowed_domains` is configured)
+
+If your app uses a top-level sign-in allowlist, pass that allowlist into
+`OtpService`:
+
+```python
+allowed_email_domains = ["crown.dev"]
+
+otp_service = OtpService(redis, "production", allowed_domains=allowed_email_domains)
+
+ok, err = await otp_service.generate_email_otp("user@gmail.com")
+ok, err = otp_service.check_email_domain("user@crown.dev")
+```
+
+If the domain is blocked, the error code is `DOMAIN_NOT_ALLOWED`.
 
 ### Auth Session Service
 
@@ -115,6 +133,42 @@ Successful responses include:
 - `scope`
 - `grantedScopes`
 
+When `allowed_email_domains` is configured, `exchange_auth_code()` raises
+`GoogleOAuthDomainNotAllowedError` if the Google account email is outside the
+allowlist.
+
+### Site Wall Service
+
+`SiteWallService` gates access to a prototype or preview with a shared password.
+Stateless — no Redis needed.
+
+```python
+from simple_auth_server.config import SiteWallConfig
+from simple_auth_server.site_wall import SiteWallService
+
+site_wall = SiteWallService(
+    env="production",
+    config=SiteWallConfig(
+        password=os.environ["SITE_WALL_PASSWORD"],
+        secret=os.environ["SITE_WALL_SECRET"],
+    ),
+)
+
+# Verify password — returns token + cookie config in one call
+ok, result = site_wall.verify_password(user_input)
+if ok:
+    # result.token, result.cookie = { name, http_only, same_site, secure, path, max_age }
+    set_cookie(result.cookie["name"], result.token, result.cookie)
+
+# Check access on subsequent requests
+ok, data = site_wall.verify_access_token(cookie_value)
+if not ok:
+    redirect("/access")
+```
+
+Rotating the password invalidates all existing tokens. Rate limiting is a consumer
+responsibility.
+
 ## What This Package Does Not Do
 
 - send email or SMS
@@ -134,4 +188,3 @@ covering:
 - Google OAuth
 - session resume
 - token refresh
-

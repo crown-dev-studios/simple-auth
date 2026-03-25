@@ -15,6 +15,8 @@ to each service (e.g. `GoogleOAuthConfig`), not through the top-level providers 
 | `redis` | object | Yes | — | Redis connection settings. |
 | `otp` | object | No | See below | OTP generation/verification tuning. |
 | `providers` | object | Yes | — | Which auth providers are enabled and their credentials. |
+| `signInPolicy` | object | No | — | Sign-in restrictions shared across enabled auth methods. |
+| `siteWall` | object | No | — | Site wall configuration for prototype access gating. |
 
 ### `redis`
 
@@ -49,6 +51,21 @@ to each service (e.g. `GoogleOAuthConfig`), not through the top-level providers 
 | `apple.keyId` | `string` | If enabled | Apple Sign-In key ID. |
 | `apple.privateKey` | `string` | If enabled | Apple Sign-In private key (PEM). |
 
+### `signInPolicy`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `allowedEmailDomains` | `string[]` | No | Restrict all enabled sign-in methods to these email domains (for example `['crown.dev']`). |
+
+### `siteWall`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `password` | `string` (min 1 char) | Yes | — | Shared access password for the site wall. |
+| `secret` | `string` (min 1 char) | Yes | — | HMAC signing secret for access tokens. |
+| `tokenTtlSeconds` | `number` (int, > 0) | No | `2592000` (30 days) | Access token validity and cookie max-age. |
+| `cookieName` | `string` (min 1 char) | No | `site_wall` | Cookie name for the access token. |
+
 ## Validating config from env vars (TypeScript)
 
 ```ts
@@ -76,6 +93,12 @@ const config = SimpleAuthServerConfigSchema.parse({
         }
       : undefined,
   },
+  signInPolicy: {
+    allowedEmailDomains: process.env.ALLOWED_EMAIL_DOMAINS
+      ?.split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  },
 })
 ```
 
@@ -88,6 +111,7 @@ from simple_auth_server.config import (
     RedisConfig,
     OtpConfig,
     SimpleAuthProvidersConfig,
+    SignInPolicyConfig,
 )
 
 config = SimpleAuthServerConfig(
@@ -100,6 +124,13 @@ config = SimpleAuthServerConfig(
         email_otp_enabled=True,
         phone_otp_enabled=True,
         google_enabled=bool(os.environ.get("GOOGLE_CLIENT_ID")),
+    ),
+    sign_in_policy=SignInPolicyConfig(
+        allowed_email_domains=[
+            entry.strip()
+            for entry in os.environ.get("ALLOWED_EMAIL_DOMAINS", "").split(",")
+            if entry.strip()
+        ] or None,
     ),
 )
 ```
@@ -122,6 +153,9 @@ See [Server SDK](./server-sdk.md) for full constructor signatures and usage exam
 | `GOOGLE_CLIENT_ID` | `providers.google.clientId` | Web client ID |
 | `GOOGLE_CLIENT_SECRET` | `providers.google.clientSecret` | |
 | `GOOGLE_REDIRECT_URI` | `providers.google.redirectUri` | Optional |
+| `ALLOWED_EMAIL_DOMAINS` | `signInPolicy.allowedEmailDomains` | Comma-separated email domain allowlist |
+| `SITE_WALL_PASSWORD` | `siteWall.password` | Shared access password |
+| `SITE_WALL_SECRET` | `siteWall.secret` | HMAC signing secret (e.g. `openssl rand -base64 32`) |
 
 ## OTP Bypass Code
 

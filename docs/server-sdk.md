@@ -3,8 +3,10 @@
 Server-side primitives for auth flows. Framework-agnostic, Redis-backed.
 
 - OTP generation and verification (email + phone) with rate limiting
+- Domain-locked sign-in (restrict enabled auth methods to allowed email domains)
 - Onboarding session store with update-via-callback pattern
 - Google OAuth auth-code exchange with scope validation
+- Site wall for password-gating prototypes (stateless, no Redis)
 
 See [Configuration Reference](./configuration.md) for the full config schema.
 
@@ -144,14 +146,14 @@ import { OtpService } from '@crown-dev-studios/simple-auth-server-ts'
 
 const otpService = new OtpService(redis, {
   env: 'development',
-  bypassCode: '123456',        // optional — dev/test only
-  ttlSeconds: 300,              // optional — default: 300 (5 min)
-  maxAttempts: 5,               // optional — default: 5
+  bypassCode: '123456', // optional — dev/test only
+  ttlSeconds: 300, // optional — default: 300 (5 min)
+  maxAttempts: 5, // optional — default: 5
   rateLimit: {
-    windowSeconds: 60,          // optional — default: 60
-    maxRequests: 3,             // optional — default: 3
+    windowSeconds: 60, // optional — default: 60
+    maxRequests: 3, // optional — default: 3
   },
-  keyPrefix: {                  // optional — override Redis key prefixes
+  keyPrefix: { // optional — override Redis key prefixes
     email: 'otp:email:',
     phone: 'otp:phone:',
     rateLimit: 'rate:otp:',
@@ -165,6 +167,7 @@ All options in `OtpServiceOptions`:
 |--------|------|---------|-------------|
 | `env` | `'production' \| 'development' \| 'test'` | — (required) | Controls bypass code guard. |
 | `bypassCode` | `string` | — | Fixed OTP for dev/test. Ignored in production. |
+| `allowedDomains` | `string[]` | — | Restrict email OTP to these domains. When using `SimpleAuthServerConfig`, pass `config.signInPolicy?.allowedEmailDomains` here. |
 | `ttlSeconds` | `number` | `300` | OTP validity window. |
 | `maxAttempts` | `number` | `5` | Max incorrect guesses before invalidation. |
 | `rateLimit.windowSeconds` | `number` | `60` | Rate limit sliding window. |
@@ -211,6 +214,28 @@ type OtpResult<T> =
   | { success: false; error: OtpError }
 ```
 
+### Domain locking (TypeScript)
+
+If your app uses domain-restricted sign-in, pass the same allowlist used by your
+top-level config into `OtpService`. Emails outside the allowlist are rejected
+before a code is generated.
+
+```ts
+const allowedEmailDomains = config.signInPolicy?.allowedEmailDomains
+
+const otpService = new OtpService(redis, {
+  env: 'production',
+  allowedDomains: allowedEmailDomains,
+})
+
+const result = await otpService.generateEmailOtp('user@gmail.com')
+
+const check = otpService.checkEmailDomain('user@crown.dev')
+```
+
+If the domain is blocked, the error code is `DOMAIN_NOT_ALLOWED`. `checkEmailDomain()`
+can be used directly when you need a preflight check before OTP generation.
+
 ### `OtpError` discriminated union
 
 ```ts
@@ -219,6 +244,7 @@ type OtpError =
   | { code: 'INVALID_CODE'; message: string; attemptsRemaining: number }
   | { code: 'MAX_ATTEMPTS'; message: string }
   | { code: 'NOT_FOUND'; message: string }
+  | { code: 'DOMAIN_NOT_ALLOWED'; message: string; domain: string; allowedDomains: string[] }
 ```
 
 ### Constructor (Python)
@@ -231,12 +257,12 @@ otp_service = OtpService(
     redis=redis,
     env="development",
     config=OtpConfig(
-        bypass_code="123456",          # optional — dev/test only
-        ttl_seconds=300,               # optional — default: 300
-        max_attempts=5,                # optional — default: 5
+        bypass_code="123456",  # optional — dev/test only
+        ttl_seconds=300,  # optional — default: 300
+        max_attempts=5,  # optional — default: 5
         rate_limit=OtpRateLimitConfig(
-            window_seconds=60,         # optional — default: 60
-            max_requests=3,            # optional — default: 3
+            window_seconds=60,  # optional — default: 60
+            max_requests=3,  # optional — default: 3
         ),
     ),
 )
@@ -262,11 +288,28 @@ else:
     print(error["code"])  # RATE_LIMITED | INVALID_CODE | MAX_ATTEMPTS | NOT_FOUND (expired → NOT_FOUND)
 ```
 
+### Domain locking (Python)
+
+```python
+allowed_email_domains = ["crown.dev", "example.com"]
+
+otp_service = OtpService(
+    redis=redis,
+    env="production",
+    allowed_domains=allowed_email_domains,
+)
+
+ok, err = await otp_service.generate_email_otp("user@gmail.com")
+ok, err = otp_service.check_email_domain("user@crown.dev")
+```
+
+If the domain is blocked, the error code is `DOMAIN_NOT_ALLOWED`.
+
 Python `OtpError` is a TypedDict:
 
 ```python
 class OtpError(TypedDict):
-    code: Literal["RATE_LIMITED", "INVALID_CODE", "MAX_ATTEMPTS", "NOT_FOUND"]
+    code: Literal["RATE_LIMITED", "INVALID_CODE", "MAX_ATTEMPTS", "NOT_FOUND", "DOMAIN_NOT_ALLOWED"]
     message: str
     retry_after_seconds: NotRequired[int]   # present when RATE_LIMITED
     attempts_remaining: NotRequired[int]     # present when INVALID_CODE
@@ -282,7 +325,7 @@ class OtpError(TypedDict):
 import { AuthSessionService } from '@crown-dev-studios/simple-auth-server-ts'
 
 const sessionService = new AuthSessionService(redis, {
-  sessionTtlSeconds: 86400,  // optional — default: 86400 (24 hours)
+  sessionTtlSeconds: 86400, // optional — default: 86400 (24 hours)
   keyPrefix: 'auth_session:', // optional — default: 'auth_session:'
 })
 ```
@@ -410,6 +453,7 @@ const googleOAuth = new GoogleOAuthService({
   clientId: process.env.GOOGLE_CLIENT_ID!,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
   redirectUri: process.env.GOOGLE_REDIRECT_URI, // optional
+  allowedEmailDomains: config.signInPolicy?.allowedEmailDomains, // optional — use the same allowlist as OTP
 })
 ```
 
@@ -418,25 +462,28 @@ const googleOAuth = new GoogleOAuthService({
 | `clientId` | `string` | Yes | Google OAuth Web client ID. |
 | `clientSecret` | `string` | Yes | Google OAuth client secret. |
 | `redirectUri` | `string` | No | Only needed if your OAuth client requires it. Must match exactly. |
+| `allowedEmailDomains` | `string[]` | No | Restrict Google sign-in to these email domains. Use the same allowlist you pass to `OtpService` when enforcing one policy across sign-in methods. |
 
 ### Exchange auth code (TypeScript)
 
 ```ts
 const result = await googleOAuth.exchangeAuthCode(authCode, {
-  requiredScopes: ['email', 'profile'], // optional — validates granted scopes
+  requiredScopes: ['email', 'profile'],
 })
 
 if (result.success) {
   const { user, refreshToken, accessToken, idToken, grantedScopes } = result.data
-  // user.sub, user.email, user.emailVerified, user.firstName, user.lastName
-  // user.rawPayload — full Google ID token payload
 } else {
   if (result.error instanceof GoogleOAuthMissingScopesError) {
-    // result.error.missingScopes — string[]
-    // result.error.grantedScopes — string[]
+  } else if (result.error instanceof GoogleOAuthDomainNotAllowedError) {
   }
 }
 ```
+
+On success, `user` includes `sub`, `email`, `emailVerified`, `firstName`, `lastName`,
+and `rawPayload`. On failure, `GoogleOAuthMissingScopesError` exposes
+`missingScopes` and `grantedScopes`, and `GoogleOAuthDomainNotAllowedError`
+exposes `domain` and `allowedDomains`.
 
 ### `GoogleOAuthExchangeData`
 
@@ -470,6 +517,7 @@ if (!revokeResult.success) {
 ### Error handling
 
 - `GoogleOAuthMissingScopesError` — returned in the `error` field when `requiredScopes` are not all granted. Import from `@crown-dev-studios/simple-auth-server-ts`. Includes `.missingScopes` and `.grantedScopes` arrays.
+- `GoogleOAuthDomainNotAllowedError` — returned in the `error` field when `allowedEmailDomains` is configured and the Google account email is outside the allowlist.
 - HTTP/network errors from Google are returned as generic `Error` instances in the `error` field.
 
 ### Python
@@ -481,17 +529,113 @@ google_oauth = GoogleOAuthService(GoogleOAuthConfig(
     client_id="your-client-id",
     client_secret="your-client-secret",
     redirect_uri=None,  # optional
+    allowed_email_domains=["crown.dev"],  # optional — use the same allowlist as OTP
 ))
 
-# Exchange
 result = await google_oauth.exchange_auth_code(
     auth_code,
-    required_scopes=["email", "profile"],  # optional
+    required_scopes=["email", "profile"],
 )
-# result is a dict with keys: user, refreshToken, accessToken, idToken, grantedScopes, ...
 
-# Revoke
 await google_oauth.revoke_token(refresh_token)
+```
+
+The exchange result includes `user`, `refreshToken`, `accessToken`, `idToken`,
+`scope`, and `grantedScopes`.
+
+---
+
+## Site Wall Service
+
+Gate access to a prototype or preview with a shared password. Stateless — no Redis
+needed. Returns HMAC-signed access tokens and framework-agnostic cookie
+configuration.
+
+### TypeScript
+
+```ts
+import { SiteWallService } from '@crown-dev-studios/simple-auth-server-ts'
+
+const siteWall = new SiteWallService({
+  env: 'production',
+  password: process.env.SITE_WALL_PASSWORD!,
+  secret: process.env.SITE_WALL_SECRET!,
+  tokenTtlSeconds: 2_592_000, // optional — default: 30 days
+  cookieName: 'site_wall', // optional — default: 'site_wall'
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `env` | `'production' \| 'development' \| 'test'` | — (required) | Controls `secure` cookie flag. |
+| `password` | `string` | — (required) | Shared access password. |
+| `secret` | `string` | — (required) | HMAC signing secret. |
+| `tokenTtlSeconds` | `number` | `2592000` (30d) | Token and cookie max-age. |
+| `cookieName` | `string` | `site_wall` | Cookie name. |
+
+#### Verify password
+
+Returns the access token and cookie config in one call:
+
+```ts
+const result = siteWall.verifyPassword(userInput)
+if (result.success) {
+  const { token, expiresAt, cookie } = result.data
+  setCookie(cookie.name, token, cookie)
+  redirect(next)
+} else {
+  // result.error.code === 'INVALID_PASSWORD'
+}
+```
+
+#### Verify access token
+
+```ts
+const check = siteWall.verifyAccessToken(cookieValue)
+if (check.success) {
+  // check.data.expiresAt — unix timestamp
+} else {
+  // check.error.code === 'INVALID_ACCESS_TOKEN'
+  redirect('/access')
+}
+```
+
+#### Cookie config
+
+```ts
+const cookie = siteWall.getCookieConfig()
+// { name: 'site_wall', httpOnly: true, sameSite: 'lax', secure: true, path: '/', maxAge: 2592000 }
+```
+
+Token format is `v1.{expiresAt}.{hmacSignature}`. The password is part of the HMAC
+key, so rotating the password invalidates all existing tokens. Rate limiting is a
+consumer responsibility.
+
+### Python
+
+```python
+from simple_auth_server.config import SiteWallConfig
+from simple_auth_server.site_wall import SiteWallService
+
+site_wall = SiteWallService(
+    env="production",
+    config=SiteWallConfig(
+        password=os.environ["SITE_WALL_PASSWORD"],
+        secret=os.environ["SITE_WALL_SECRET"],
+        token_ttl_seconds=2_592_000,  # optional — default: 30 days
+        cookie_name="site_wall",  # optional — default: "site_wall"
+    ),
+)
+
+ok, result = site_wall.verify_password(user_input)
+if ok:
+    set_cookie(result.cookie["name"], result.token, result.cookie)
+
+ok, data = site_wall.verify_access_token(cookie_value)
+if not ok:
+    redirect("/access")
+
+cookie = site_wall.get_cookie_config()
 ```
 
 ---

@@ -11,6 +11,7 @@ This repo contains an extracted Google auth-code flow that returns a one-time `s
 2) **Server exchanges using the same Web client**
 - `clientId` = the same **Web** client ID used above
 - `clientSecret` = the secret for that Web client
+- Optional: pass the same domain allowlist you use for email OTP via your server-side `allowedEmailDomains` / `signInPolicy.allowedEmailDomains` wiring if sign-in should be domain-restricted across providers
 
 3) **Redirect URI**
 - Default: **omit** `redirectUri`

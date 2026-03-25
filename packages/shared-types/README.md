@@ -47,6 +47,9 @@ const config = SimpleAuthServerConfigSchema.parse({
     emailOtp: { enabled: true },
     phoneOtp: { enabled: true },
   },
+  signInPolicy: {
+    allowedEmailDomains: ['crown.dev'],
+  },
 })
 ```
 
@@ -96,10 +99,10 @@ Includes the discriminated response union for:
 - `redis`
 - `otp`
 - `providers`
+- `signInPolicy`
 
 ## Why Use This Package
 
 - The same schema can validate both incoming requests and outgoing responses.
 - Type inference comes directly from the runtime contract.
 - It keeps mobile, web, and server packages aligned as auth flows evolve.
-

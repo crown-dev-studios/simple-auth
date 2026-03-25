@@ -8,6 +8,8 @@ exchange helper, without forcing a web framework or database model.
 
 - OTP onboarding flows backed by Redis
 - Google sign-in where the client sends a one-time `authCode`
+- Password-gating prototypes and previews (site wall)
+- Domain-locked sign-in (restrict enabled auth methods to specific email domains)
 - Custom auth servers that want primitives instead of a full auth product
 
 ## Install
@@ -35,7 +37,7 @@ const redis = createRedisClient({ url: process.env.REDIS_URL })
 
 const otpService = new OtpService(redis, {
   env: 'development',
-  bypassCode: '123456',
+  bypassCode: '123456', // dev/test only
 })
 
 const sessionService = new AuthSessionService(redis)
@@ -43,6 +45,7 @@ const sessionService = new AuthSessionService(redis)
 const googleOAuth = new GoogleOAuthService({
   clientId: process.env.GOOGLE_CLIENT_ID!,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+  allowedEmailDomains: ['crown.dev'], // optional — use the same allowlist as OTP
 })
 ```
 
@@ -83,9 +86,28 @@ Verification returns:
 - `INVALID_CODE`
 - `MAX_ATTEMPTS`
 - `NOT_FOUND`
+- `DOMAIN_NOT_ALLOWED` (when `allowedDomains` is configured)
 
 In non-production environments, `bypassCode` can replace the random code to make
 testing deterministic.
+
+If your app uses a top-level sign-in allowlist, pass that allowlist into
+`OtpService`:
+
+```ts
+const allowedEmailDomains = config.signInPolicy?.allowedEmailDomains
+
+const otpService = new OtpService(redis, {
+  env: 'production',
+  allowedDomains: allowedEmailDomains,
+})
+
+const result = await otpService.generateEmailOtp('user@gmail.com')
+
+const check = otpService.checkEmailDomain('user@crown.dev')
+```
+
+If the domain is blocked, the error code is `DOMAIN_NOT_ALLOWED`.
 
 ### Sessions
 
@@ -129,6 +151,39 @@ if (exchange.success) {
 
 If required scopes are missing, the error is a
 `GoogleOAuthMissingScopesError` with `missingScopes` and `grantedScopes`.
+If `allowedEmailDomains` is configured and the Google account email is outside
+that allowlist, the error is a `GoogleOAuthDomainNotAllowedError`.
+
+### Site Wall
+
+`SiteWallService` gates access to a prototype or preview with a shared password.
+Stateless — no Redis needed. Returns HMAC-signed access tokens and ready-to-use
+cookie configuration.
+
+```ts
+import { SiteWallService } from '@crown-dev-studios/simple-auth-server-ts'
+
+const siteWall = new SiteWallService({
+  env: 'production',
+  password: process.env.SITE_WALL_PASSWORD!,
+  secret: process.env.SITE_WALL_SECRET!,
+})
+
+// Verify password — returns token + cookie config in one call
+const result = siteWall.verifyPassword(userInput)
+if (result.success) {
+  const { token, cookie } = result.data
+  // cookie = { name, httpOnly, sameSite, secure, path, maxAge }
+  setCookie(cookie.name, token, cookie)
+}
+
+// Check access on subsequent requests
+const check = siteWall.verifyAccessToken(cookieValue)
+if (!check.success) redirect('/access')
+```
+
+Rotating the password invalidates all existing tokens. Rate limiting is a consumer
+responsibility (apply at your framework layer).
 
 ## Intended Architecture
 
@@ -149,4 +204,3 @@ See `examples/server-ts/index.ts` in this repo for a complete sample with:
 - Google OAuth returning `authenticated`, `needs_phone`, or `needs_linking`
 - Session resume
 - Token refresh
-

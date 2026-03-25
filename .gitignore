@@ -28,6 +28,9 @@ coverage/
 bun.lockb
 bun.lock
 
+# Claude Code (local settings are personal)
+.claude/settings.local.json
+
 # Env files
 .env
 .env.*
